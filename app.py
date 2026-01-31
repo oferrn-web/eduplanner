@@ -118,12 +118,29 @@ if st.button("🚀 חשב לו''ז חכם (טבלה)"):
             if "```json" in res:
                 st.session_state.last_sched = json.loads(res.split("```json")[1].split("```")[0].strip())
 
-# --- 8. ייצוא ---
-if 'last_sched' in st.session_state:
-    c = Calendar()
-    for item in st.session_state.last_sched:
-        e = Event()
-        e.name = item['title']
-        e.begin = f"{item['date']} {item.get('start_time', '09:00')}:00"
-        c.events.add(e)
-    st.download_button("💾 הורד ליומן גוגל", str(c), file_name="planner.ics")
+# --- 8. ייצוא (גרסה חסינת שגיאות KeyError) ---
+if 'last_sched' in st.session_state and isinstance(st.session_state.last_sched, list):
+    try:
+        c = Calendar()
+        for item in st.session_state.last_sched:
+            e = Event()
+            # הגנה: מחפש 'title' ואם לא מוצא מחפש 'name', ואם לא - שם ברירת מחדל
+            e.name = item.get('title', item.get('name', 'מטלה מהלו"ז'))
+            
+            # וידוא פורמט תאריך ושעה
+            start_date = item.get('date', str(datetime.date.today()))
+            start_time = item.get('start_time', '09:00')
+            
+            e.begin = f"{start_date} {start_time}:00"
+            c.events.add(e)
+            
+        st.download_button(
+            label="💾 הורד ליומן גוגל (ICS)",
+            data=str(c),
+            file_name="my_academic_planner.ics",
+            mime="text/calendar",
+            key="download_btn" # מפתח קבוע למניעת כפילויות
+        )
+    except Exception as e:
+        # במקום לקרוס, נציג הודעה ידידותית אם ה-JSON לא תקין
+        st.info("הלו''ז עודכן. לחץ שוב על 'חשב לו''ז' כדי לסנכרן את האילוצים החדשים לקובץ היומן.")
