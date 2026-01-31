@@ -64,16 +64,46 @@ if 'extracted_tasks' not in st.session_state:
 raw_input = st.text_area("הדבק כאן את תוכן הטבלה או קישור:")
 
 if st.button("🔍 חלץ מטלות"):
-    with st.spinner("מזהה מטלות..."):
-        parse_prompt = f"חלץ מרשימה זו רק את שמות המטלות העיקריות. החזר אך ורק רשימת JSON של שמות המטלות: {raw_input}"
-        try:
-            res = model.generate_content(parse_prompt)
-            clean_json = res.text.replace("```json", "").replace("```", "").strip()
-            names = json.loads(clean_json)
-            st.session_state.extracted_tasks = [{"name": n, "time": 2.0, "deadline": str(datetime.date.today()), "subs": ""} for n in names]
-            st.rerun()
-        except:
-            st.error("שגיאה בזיהוי. נסה להדביק טקסט ישיר מהטבלה.")
+    if not raw_input:
+        st.warning("נא להדביק טקסט או קישור קודם.")
+    else:
+        with st.spinner("ה-AI מנתח את הטקסט..."):
+            # פרומפט משופר ונוקשה יותר
+            parse_prompt = f"""
+            נתח את הטקסט הבא וחלץ ממנו רק את שמות המטלות העיקריות.
+            החזר אך ורק רשימת JSON של שמות המטלות, ללא שום טקסט נוסף לפני או אחרי.
+            פורמט נדרש: ["שם מטלה 1", "שם מטלה 2"]
+            הטקסט לניתוח:
+            {raw_input}
+            """
+            try:
+                res = model.generate_content(parse_prompt)
+                full_res_text = res.text
+                
+                # מנגנון ניקוי חכם: מחפשים את הסוגריים המרובעים של הרשימה
+                import re
+                json_match = re.search(r'\[.*\]', full_res_text, re.DOTALL)
+                
+                if json_match:
+                    json_str = json_match.group(0)
+                    names = json.loads(json_str)
+                    
+                    if isinstance(names, list) and len(names) > 0:
+                        st.session_state.extracted_tasks = [
+                            {"name": str(n), "time": 2.0, "deadline": str(datetime.date.today()), "subs": ""} 
+                            for n in names
+                        ]
+                        st.success(f"נמצאו {len(names)} מטלות!")
+                        st.rerun()
+                    else:
+                        st.error("ה-AI החזיר רשימה ריקה. נסה להדביק טקסט ברור יותר.")
+                else:
+                    # הצגת התשובה הגולמית לצרכי אבחון
+                    st.error("ה-AI לא החזיר פורמט רשימה תקין.")
+                    with st.expander("ראה מה ה-AI ענה (לצרכי תיקון)"):
+                        st.code(full_res_text)
+            except Exception as e:
+                st.error(f"שגיאה טכנית: {e}")
 
 # --- 5. עריכת פרטי המטלות ---
 if st.session_state.extracted_tasks:
