@@ -92,27 +92,47 @@ if st.session_state.extracted_tasks:
                 st.session_state.extracted_tasks[idx]['deadline'] = str(st.date_input("דדליין", value=d_val, key=f"d_{idx}"))
             st.session_state.extracted_tasks[idx]['subs'] = st.text_area("תתי משימות", value=task.get('subs', ""), key=f"s_{idx}")
 
-# --- 7. חישוב לו"ז מפורט ---
+# --- 7. חישוב לו"ז אסטרטגי (הפרומפט החכם) ---
 st.divider()
-if st.button("🚀 חשב לו''ז מפורט וסנכרן ליומן"):
-    if st.session_state.extracted_tasks:
+if st.button("🚀 חשב לו''ז אסטרטגי וחכם"):
+    if not st.session_state.extracted_tasks:
+        st.warning("נא להזין מטלות קודם.")
+    else:
+        # הפרומפט החדש והמפורט
         final_prompt = f"""
-        אתה מתכנן לוחות זמנים מקצועי לסטודנטים. פזר את המטלות האלו בלו"ז: {st.session_state.extracted_tasks}
-        אילוצים (זמן תפוס): {day_constraints}.
-        מגבלת שעות עבודה ביום: {daily_max_hours}.
-        
-        הנחיות קריטיות:
-        1. צור אירוע נפרד לכל תת-משימה! 
-        2. השתמש בשנה שמופיעה בדדליין של כל מטלה.
-        3. אל תשבץ בשעות האילוצים.
-        4. החזר טבלה בעברית ובסוף בלוק JSON עם: title, date (YYYY-MM-DD), start_time (HH:MM).
+        אתה מומחה בכיר לניהול זמן ואסטרטגיות למידה באקדמיה. 
+        המשימה שלך היא לבנות תוכנית עבודה שבועית וחודשית עבור סטודנט עמוס.
+
+        נתוני המטלות: {st.session_state.extracted_tasks}
+        זמנים שבהם הסטודנט תפוס לחלוטין (חסמים): {day_constraints}
+        מגבלת שעות עבודה יומית מקסימלית: {daily_max_hours} שעות.
+        שנת לימודים נוכחית: {selected_year}
+
+        עקרונות עבודה מחייבים לשיבוץ:
+        1. פירוק משימות גדולות (Chunking): משימה שדורשת מעל 3 שעות עבודה חייבת להתפרס על פני מספר ימים. אל תשבץ מעל 3 שעות לאותה מטלה באותו יום.
+        2. תעדוף דדליין: משימות שהדדליין שלהן קרוב יותר מקבלות עדיפות בשיבוץ בימים הקרובים.
+        3. מרווח ביטחון (Buffer): שאף לסיים כל מטלה לפחות 48 שעות לפני הדדליין הרשמי שלה.
+        4. רצף לוגי: אם יש תתי-משימות, שבץ אותן לפי סדר הגיוני (למשל: איסוף חומרים -> קריאה -> כתיבה -> עריכה).
+        5. התחשבות באילוצים: אל תשבץ שום דקה של עבודה בתוך טווחי השעות של האילוצים. אלו זמנים "מתים" עבור המערכת.
+        6. איזון עומסים (Load Balancing): פזר את השעות כך שהעומס היומי יהיה מאוזן ככל האפשר ולא יגיע לקצה המגבלה בכל יום, כדי למנוע שחיקה.
+
+        פורמט פלט נדרש:
+        1. טבלה בעברית: [תאריך | שם הקורס והמטלה | שלב/תת-משימה לביצוע | שעות שיבוץ | שעות התחלה וסיום משוערות].
+        2. בסוף התשובה, בלוק JSON נקי בתוך ```json ``` המכיל את כל האירועים לייצוא ליומן גוגל עם השדות: title, date (YYYY-MM-DD), start_time (HH:MM).
         """
-        with st.spinner("בונה לו''ז מפורט..."):
-            res = model.generate_content(final_prompt).text
-            st.markdown(res)
-            if "```json" in res:
-                st.session_state.last_sched = json.loads(res.split("```json")[1].split("```")[0].strip())
-                st.success(f"הלו''ז כולל {len(st.session_state.last_sched)} אירועים נפרדים.")
+        
+        with st.spinner("האלגוריתם מנתח עומסים ובונה אסטרטגיית למידה..."):
+            try:
+                res = model.generate_content(final_prompt).text
+                st.markdown(res)
+                
+                # חילוץ ה-JSON לייצוא
+                if "```json" in res:
+                    json_str = res.split("```json")[1].split("```")[0].strip()
+                    st.session_state.last_sched = json.loads(json_str)
+                    st.success(f"הלו''ז האסטרטגי מוכן! נוצרו {len(st.session_state.last_sched)} משבצות עבודה.")
+            except Exception as e:
+                st.error(f"ה-AI התקשה בחישוב העומס: {e}")
 
 # --- 8. תצוגה מקדימה וייצוא ---
 if st.session_state.last_sched:
