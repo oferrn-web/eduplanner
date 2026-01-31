@@ -4,6 +4,7 @@ from ics import Calendar, Event
 import datetime
 import json
 
+st.write("בדיקה: גרסה 4.0 עובדת!")
 # --- 1. הגדרות דף ועיצוב RTL ---
 st.set_page_config(page_title="מתכנן המטלות החכם", layout="wide")
 st.markdown("<style> .stApp { direction: RTL; text-align: right; } </style>", unsafe_allow_html=True)
