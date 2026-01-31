@@ -3,136 +3,117 @@ import google.generativeai as genai
 from ics import Calendar, Event
 import datetime
 import json
-import pandas as pd
 
-# --- 1. הגדרות דף ועיצוב RTL (מימין לשמאל) ---
+# --- 1. הגדרות דף ועיצוב RTL ---
 st.set_page_config(page_title="מתכנן המטלות החכם שלי", layout="wide")
-
 st.markdown("""
     <style>
     .stApp { direction: RTL; text-align: right; }
     div[data-testid="stSidebar"] { direction: RTL; }
     .stTextArea textarea, .stTextInput input { direction: RTL; }
-    .stMultiSelect div { direction: RTL; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. חיבור לבינה מלאכותית (Secrets) ---
 try:
-    # משיכת המפתח מה-Secrets שהגדרת ב-Streamlit
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel('gemini-3-pro-preview')
 except Exception as e:
-    st.error("שגיאה בחיבור ל-API. וודא שהגדרת את GEMINI_API_KEY ב-Secrets של Streamlit.")
+    st.error("שגיאה בחיבור ל-API. וודא שהגדרת את GEMINI_API_KEY ב-Secrets.")
     st.stop()
 
 st.title("📅 מתכנן המטלות החכם לסטודנטים")
-st.write("ברוכים הבאים! הכלי שיעזור לכם לפרק את המטלות של סמסטר א' ללו\"ז ריאלי ביומן.")
 
-# --- 3. סרגל צד: אילוצים מפורטים ---
+# --- 3. סרגל צד: אילוצים ---
 with st.sidebar:
     st.header("⚙️ הגדרות ואילוצים")
-    
-    st.subheader("🗓️ אילוצי ימים ושעות")
     days_week = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"]
-    selected_days = st.multiselect("בחר ימים שבהם יש לך לו\"ז קבוע:", days_week)
+    selected_days = st.multiselect("ימים עם לו\"ז קבוע:", days_week)
     
     day_constraints = {}
     for day in selected_days:
-        st.write(f"**שעות תפוסות ביום {day}:**")
-        start_t = st.time_input(f"התחלה", datetime.time(8, 0), key=f"start_{day}")
-        end_t = st.time_input(f"סיום", datetime.time(16, 0), key=f"end_{day}")
+        st.write(f"**ביום {day}:**")
+        start_t = st.time_input(f"התחלה", datetime.time(8, 0), key=f"s_{day}")
+        end_t = st.time_input(f"סיום", datetime.time(16, 0), key=f"e_{day}")
         day_constraints[day] = f"{start_t.strftime('%H:%M')} עד {end_t.strftime('%H:%M')}"
 
     st.divider()
-    daily_max_hours = st.slider("מקסימום שעות עבודה ביום על מטלות:", 1, 10, 4)
-    additional_info = st.text_area("הערות נוספות ל-AI (למשל: 'בימי חמישי אני מעדיף לעבוד בערב')")
+    daily_max_hours = st.slider("מקסימום שעות עבודה ביום:", 1, 10, 4)
 
-# --- 4. הזנת מטלות (Sheets או רשימה) ---
-st.header("📝 הזנת מטלות ותתי-משימות")
+# --- 4. מנגנון הזנת מטלות חכם ---
+st.header("📝 הזנת מטלות")
 
-input_method = st.radio("בחר שיטת הזנה:", ["רשימה ידנית", "קישור לגוגל שיטס / רשימה מרוכזת"])
+if 'extracted_tasks' not in st.session_state:
+    st.session_state.extracted_tasks = []
 
-if 'tasks' not in st.session_state:
-    st.session_state.tasks = []
+# בחירת שיטת הזנה
+input_method = st.radio("בחר שיטה:", ["הזנה ידנית", "ייבוא מרשימה/קישור גוגל שיטס"])
 
-if input_method == "רשימה ידנית":
-    with st.expander("➕ הוספת מטלה חדשה", expanded=True):
+if input_method == "הזנה ידנית":
+    with st.expander("➕ הוספת מטלה אחת"):
         t_name = st.text_input("שם המטלה")
-        c1, c2 = st.columns(2)
-        with c1:
-            t_time = st.number_input("סך שעות עבודה", min_value=1.0, step=0.5)
-        with c2:
-            t_deadline = st.date_input("תאריך דדליין", value=datetime.date.today() + datetime.timedelta(days=14))
-        t_subs = st.text_area("תתי משימות (הפרד בשורות)")
-        
-        if st.button("הוסף לרשימה"):
-            if t_name:
-                st.session_state.tasks.append({
-                    "name": t_name, "time": t_time, 
-                    "deadline": t_deadline.strftime("%Y-%m-%d"), "subtasks": t_subs
-                })
-                st.rerun()
-else:
-    sheets_input = st.text_area("הדבק כאן קישור לגוגל שיטס או העתק-הדבק של טבלת המטלות שלך:")
-    if st.button("עדכן נתוני טבלה"):
-        st.info("ה-AI ינתח את הטקסט/קישור שהזנת בזמן חישוב הלו\"ז.")
-
-# --- 5. הצגת הרשימה הקיימת ---
-if st.session_state.tasks:
-    st.subheader("📋 המטלות שלך:")
-    for idx, task in enumerate(st.session_state.tasks):
-        cols = st.columns([8, 1])
-        cols[0].write(f"🔹 **{task['name']}** - {task['time']} שעות (עד {task['deadline']})")
-        if cols[1].button("🗑️", key=f"del_{idx}"):
-            st.session_state.tasks.pop(idx)
+        t_time = st.number_input("שעות", min_value=1.0, step=0.5)
+        t_deadline = st.date_input("דדליין", value=datetime.date.today() + datetime.timedelta(days=7))
+        t_subs = st.text_area("תתי משימות")
+        if st.button("הוסף"):
+            st.session_state.extracted_tasks.append({"name": t_name, "time": t_time, "deadline": str(t_deadline), "subtasks": t_subs})
             st.rerun()
 
-# --- 6. מנוע ה-AI: חישוב לו"ז חכם ---
-st.divider()
-if st.button("🚀 חשב לו\"ז חכם (פלט טבלאי)"):
-    tasks_to_send = st.session_state.tasks if input_method == "רשימה ידנית" else sheets_input
-    
-    if not tasks_to_send:
-        st.warning("נא להזין מטלות לפני החישוב.")
-    else:
-        prompt = f"""
-        אתה מומחה לניהול זמן לסטודנטים. עליך לבנות תוכנית עבודה חודשית.
-        המטלות והזמנים: {tasks_to_send}
-        
-        אילוצים קבועים (שעות תפוסות): {day_constraints}
-        מגבלת שעות עבודה על מטלות ביום: {daily_max_hours} שעות.
-        מידע נוסף: {additional_info}
-        
-        הנחיות לפלט:
-        1. הצג את התוכנית בטבלה מסודרת בעברית עם העמודות: תאריך, מטלה, פירוט תת-משימה, שעות עבודה.
-        2. לאחר הטבלה, הוסף בלוק קוד JSON בתוך ```json ``` המכיל רשימת אובייקטים עם השדות: title, date (YYYY-MM-DD), start_time (HH:MM).
-        """
-        
-        with st.spinner("ה-AI בונה לך את הלו\"ז האופטימלי..."):
-            response = model.generate_content(prompt)
-            res_text = response.text
-            
-            # הצגת הפלט (הטבלה תופיע כאן כחלק מהטקסט)
-            st.markdown(res_text)
-            
-            # ניסיון חילוץ ה-JSON לייצוא ICS
+else:
+    raw_input = st.text_area("הדבק כאן קישור לגוגל שיטס או רשימת מטלות מהסילבוס:")
+    if st.button("🔍 חלץ מטלות מהטקסט"):
+        with st.spinner("ה-AI מזהה את המטלות שלך..."):
+            parse_prompt = f"חלץ מרשימה זו רק את שמות המטלות העיקריות. החזר רשימת JSON של שמות המטלות בלבד: {raw_input}"
+            response = model.generate_content(parse_prompt)
             try:
-                if "```json" in res_text:
-                    json_part = res_text.split("```json")[1].split("```")[0].strip()
-                    st.session_state.last_sched = json.loads(json_part)
-                    st.success("הלו\"ז מוכן לייצוא ליומן גוגל!")
-            except Exception as e:
-                st.info("הלו\"ז הוצג, אך לא ניתן היה ליצור קובץ יומן אוטומטי מהפלט הזה.")
+                # חילוץ שמות המטלות
+                names = json.loads(response.text.replace("```json", "").replace("```", "").strip())
+                st.session_state.extracted_tasks = [{"name": name, "time": 2.0, "deadline": str(datetime.date.today()), "subtasks": ""} for name in names]
+                st.success(f"נמצאו {len(names)} מטלות!")
+            except:
+                st.error("לא הצלחתי לזהות מטלות. נסה להדביק טקסט ברור יותר.")
 
-# --- 7. ייצוא ליומן ---
+# --- 5. עריכת פרטים למטלות שחולצו ---
+if st.session_state.extracted_tasks:
+    st.subheader("⚙️ הגדר פרטים לכל מטלה:")
+    for idx, task in enumerate(st.session_state.extracted_tasks):
+        with st.expander(f"מטלה: {task['name']}", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.extracted_tasks[idx]['time'] = st.number_input(f"שעות עבודה נדרשות", value=float(task['time']), key=f"time_{idx}")
+            with col2:
+                st.session_state.extracted_tasks[idx]['deadline'] = str(st.date_input(f"דדליין", key=f"date_{idx}"))
+            st.session_state.extracted_tasks[idx]['subtasks'] = st.text_area(f"תתי משימות עבור {task['name']}", value=task['subtasks'], key=f"sub_{idx}")
+
+# --- 6. חישוב לו"ז סופי ---
+st.divider()
+if st.button("🚀 חשב לו\"ז חכם בטבלה"):
+    if not st.session_state.extracted_tasks:
+        st.warning("אין מטלות לחישוב.")
+    else:
+        final_prompt = f"""
+        אתה מומחה לניהול זמן לסטודנטים לחינוך מיוחד.
+        מטלות: {st.session_state.extracted_tasks}
+        אילוצי שעות: {day_constraints}
+        מקסימום {daily_max_hours} שעות ביום.
+        
+        צור טבלה מסודרת בעברית (תאריך, מטלה, תת-משימה, שעות).
+        בסוף, הוסף בלוק JSON עם title, date (YYYY-MM-DD), start_time.
+        """
+        with st.spinner("בונה תוכנית עבודה..."):
+            res = model.generate_content(final_prompt).text
+            st.markdown(res)
+            
+            # שמירה לייצוא ICS
+            if "```json" in res:
+                st.session_state.last_sched = json.loads(res.split("```json")[1].split("```")[0].strip())
+
 if 'last_sched' in st.session_state:
     c = Calendar()
     for item in st.session_state.last_sched:
         e = Event()
         e.name = item['title']
-        e.begin = f"{item['date']} {item['start_time']}:00"
+        e.begin = f"{item['date']} {item.get('start_time', '09:00')}:00"
         c.events.add(e)
-    
-    st.download_button("💾 הורד את הלו\"ז ליומן גוגל (ICS)", str(c), file_name="my_schedule.ics")
+    st.download_button("💾 הורד ליומן גוגל", str(c), file_name="planner.ics")
