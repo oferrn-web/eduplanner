@@ -3,13 +3,27 @@ import google.generativeai as genai
 from ics import Calendar, Event
 import datetime
 import json
+import re
 
-st.write("בדיקה: גרסה 4.0 עובדת!")
 # --- 1. הגדרות דף ועיצוב RTL ---
 st.set_page_config(page_title="מתכנן המטלות החכם", layout="wide")
 st.markdown("<style> .stApp { direction: RTL; text-align: right; } </style>", unsafe_allow_html=True)
 
-# --- 2. חיבור ל-AI (Secrets) ---
+# --- 2. ניהול זיכרון (Session State) ---
+if 'form_version' not in st.session_state:
+    st.session_state.form_version = 0
+if 'extracted_tasks' not in st.session_state:
+    st.session_state.extracted_tasks = []
+
+def clear_everything():
+    # מחיקת כל המפתחות בזיכרון
+    for key in list(st.session_state.keys()):
+        if key != 'form_version':
+            del st.session_state[key]
+    st.session_state.form_version += 1
+    st.rerun()
+
+# --- 3. חיבור ל-AI (Secrets) ---
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY, transport='rest')
@@ -20,136 +34,91 @@ except Exception as e:
 
 st.title("📅 מתכנן המטלות החכם")
 
-# --- 3. סרגל צד: אילוצים עם כותרות ---
+# --- 4. סרגל צד: אילוצים עם כותרות ---
 with st.sidebar:
-    st.header("⚙️ הגדרות מערכת ואילוצים")
-    st.write("הגדר זמנים שבהם **אסור** ל-AI לשבץ מטלות.")
-    
+    st.header("⚙️ אילוצים וזמנים תפוסים")
     days_week = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"]
-    selected_days = st.multiselect("בחר ימים עם אילוץ קבוע:", days_week)
+    selected_days = st.multiselect("ימים עם אילוץ קבוע:", days_week, key=f"days_{st.session_state.form_version}")
     
     day_constraints = []
     for day in selected_days:
         with st.expander(f"אילוץ ליום {day}", expanded=True):
-            headline = st.text_input(f"כותרת האילוץ (למשל: עבודה)", key=f"h_{day}")
-            col1, col2 = st.columns(2)
-            with col1:
-                start_t = st.time_input(f"התחלה", datetime.time(8, 0), key=f"s_{day}")
-            with col2:
-                end_t = st.time_input(f"סיום", datetime.time(16, 0), key=f"e_{day}")
-            day_constraints.append({
-                "day": day,
-                "title": headline,
-                "hours": f"{start_t.strftime('%H:%M')} עד {end_t.strftime('%H:%M')}"
-            })
+            headline = st.text_input(f"כותרת (למשל: עבודה)", key=f"h_{day}_{st.session_state.form_version}")
+            # כאן התיקון - השמות c1 ו-c2 עקביים
+            c1, c2 = st.columns(2)
+            with c1:
+                start_t = st.time_input(f"התחלה", datetime.time(8, 0), key=f"s_{day}_{st.session_state.form_version}")
+            with c2:
+                end_t = st.time_input(f"סיום", datetime.time(16, 0), key=f"e_{day}_{st.session_state.form_version}")
+            day_constraints.append({"day": day, "title": headline, "hours": f"{start_t.strftime('%H:%M')} עד {end_t.strftime('%H:%M')}"})
 
-    daily_max_hours = st.slider("מקסימום שעות עבודה ביום:", 1, 10, 4)
+    daily_max_hours = st.slider("מקסימום שעות עבודה ביום:", 1, 10, 4, key=f"max_{st.session_state.form_version}")
 
+    st.divider()
     if st.button("🗑️ ניקוי כל הנתונים"):
-        st.session_state.extracted_tasks = []
-        st.rerun()
+        clear_everything()
 
-# --- 4. הזנת מטלות והדרכה ---
+# --- 5. הזנת מטלות והדרכה ---
 st.header("📝 הזנת מטלות")
+st.info("💡 **טיפ:** סמנו את הטבלה בגוגל שיטס, העתיקו (Ctrl+C) והדביקו כאן. ה-AI כבר ידע להפריד בין קורס למטלה.")
 
-# תיבת הדרכה להעתקה משיטס
-st.info("""
-💡 **טיפ להצלחה:** הדרך הטובה ביותר היא לסמן את הטבלה שלך בגוגל שיטס (התאים עצמם), 
-להעתיק (Ctrl+C) ולהדביק בתיבה מטה. ה-AI יזהה את המבנה אוטומטית.
-""")
+raw_input = st.text_area("הדבק כאן את תוכן הטבלה:", key=f"raw_in_{st.session_state.form_version}")
 
-if 'extracted_tasks' not in st.session_state:
-    st.session_state.extracted_tasks = []
-
-raw_input = st.text_area("הדבק כאן את תוכן הטבלה או קישור:")
-
-if st.button("🔍 חלץ מטלות"):
-    if not raw_input:
-        st.warning("נא להדביק טקסט או קישור קודם.")
-    else:
-        with st.spinner("ה-AI מנתח את הטקסט..."):
-            # פרומפט משופר ונוקשה יותר
+if st.button("🔍 חלץ ונתח מטלות"):
+    if raw_input:
+        with st.spinner("ה-AI מנתח את מבנה הטקסט..."):
             parse_prompt = f"""
-            נתח את הטקסט הבא וחלץ ממנו רק את שמות המטלות העיקריות.
-            החזר אך ורק רשימת JSON של שמות המטלות, ללא שום טקסט נוסף לפני או אחרי.
-            פורמט נדרש: ["שם מטלה 1", "שם מטלה 2"]
-            הטקסט לניתוח:
-            {raw_input}
+            נתח את הטקסט הבא וחלץ מטלות. 
+            זהה: שם קורס, שם מטלה, תאריך יעד (YYYY-MM-DD), ותתי-משימות.
+            החזר רשימת JSON בלבד: [{{"name": "קורס: מטלה", "time": 2.0, "deadline": "YYYY-MM-DD", "subs": "פירוט"}}]
+            טקסט: {raw_input}
             """
             try:
                 res = model.generate_content(parse_prompt)
-                full_res_text = res.text
-                
-                # מנגנון ניקוי חכם: מחפשים את הסוגריים המרובעים של הרשימה
-                import re
-                json_match = re.search(r'\[.*\]', full_res_text, re.DOTALL)
-                
+                json_match = re.search(r'\[.*\]', res.text, re.DOTALL)
                 if json_match:
-                    json_str = json_match.group(0)
-                    names = json.loads(json_str)
-                    
-                    if isinstance(names, list) and len(names) > 0:
-                        st.session_state.extracted_tasks = [
-                            {"name": str(n), "time": 2.0, "deadline": str(datetime.date.today()), "subs": ""} 
-                            for n in names
-                        ]
-                        st.success(f"נמצאו {len(names)} מטלות!")
-                        st.rerun()
-                    else:
-                        st.error("ה-AI החזיר רשימה ריקה. נסה להדביק טקסט ברור יותר.")
-                else:
-                    # הצגת התשובה הגולמית לצרכי אבחון
-                    st.error("ה-AI לא החזיר פורמט רשימה תקין.")
-                    with st.expander("ראה מה ה-AI ענה (לצרכי תיקון)"):
-                        st.code(full_res_text)
+                    st.session_state.extracted_tasks = json.loads(json_match.group(0))
+                    st.success("המטלות חולצו! עברו עליהן למטה כדי לעדכן שעות.")
+                    st.rerun()
             except Exception as e:
-                st.error(f"שגיאה טכנית: {e}")
+                st.error(f"שגיאה בניתוח: {e}")
 
-# --- 5. עריכת פרטי המטלות ---
+# --- 6. עריכת פרטי המטלות ---
 if st.session_state.extracted_tasks:
-    st.subheader("✍️ הגדר שעות ותתי-משימות")
+    st.subheader("✍️ עדכון פרטים אחרון")
     for idx, task in enumerate(st.session_state.extracted_tasks):
         with st.expander(f"עריכה: {task['name']}", expanded=True):
             col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
-                st.session_state.extracted_tasks[idx]['name'] = st.text_input("שם", value=task['name'], key=f"n_{idx}")
+                st.session_state.extracted_tasks[idx]['name'] = st.text_input("שם", value=task['name'], key=f"n_{idx}_{st.session_state.form_version}")
             with col2:
-                st.session_state.extracted_tasks[idx]['time'] = st.number_input("שעות", value=float(task['time']), key=f"t_{idx}")
+                st.session_state.extracted_tasks[idx]['time'] = st.number_input("שעות", value=float(task.get('time', 2.0)), key=f"t_{idx}_{st.session_state.form_version}")
             with col3:
-                curr_date = datetime.datetime.strptime(task['deadline'], "%Y-%m-%d").date()
-                st.session_state.extracted_tasks[idx]['deadline'] = str(st.date_input("דדליין", value=curr_date, key=f"d_{idx}"))
-            st.session_state.extracted_tasks[idx]['subs'] = st.text_area("תתי משימות", value=task['subs'], key=f"s_{idx}")
+                try:
+                    d_val = datetime.datetime.strptime(task['deadline'], "%Y-%m-%d").date()
+                except:
+                    d_val = datetime.date.today()
+                st.session_state.extracted_tasks[idx]['deadline'] = str(st.date_input("דדליין", value=d_val, key=f"d_{idx}_{st.session_state.form_version}"))
+            st.session_state.extracted_tasks[idx]['subs'] = st.text_area("תתי משימות", value=task.get('subs', ""), key=f"s_{idx}_{st.session_state.form_version}")
 
-# --- 6. יצירת הלו"ז הטבלאי (עם תיקון לוגיקת האילוצים) ---
+# --- 7. חישוב לו"ז סופי ---
 st.divider()
-if st.button("🚀 חשב לו''ז חכם"):
-    if not st.session_state.extracted_tasks:
-        st.warning("נא להזין מטלות.")
-    else:
-        # הנחיה מחמירה ל-AI לגבי האילוצים
+if st.button("🚀 חשב לו''ז חכם (טבלה)"):
+    if st.session_state.extracted_tasks:
         final_prompt = f"""
-        אתה מנהל לו"ז מקצועי. המטרה: לשבץ את המטלות הבאות בזמנים הפנויים בלבד.
-        מטלות לשיבוץ: {st.session_state.tasks}
+        פזר את המטלות האלו בלו"ז: {st.session_state.extracted_tasks}
+        חסמים (זמנים שבהם המשתמש תפוס ואסור לשבץ): {day_constraints}
+        מגבלת שעות עבודה ביום: {daily_max_hours}.
         
-        חסמים (זמנים שבהם אסור לשבץ כלום - אלו זמנים תפוסים):
-        {day_constraints}
-        
-        חוקים נוקשים:
-        1. חל איסור מוחלט לשבץ עבודה על מטלות בזמני החסמים שצוינו לעיל. החסמים הם "שטח מת".
-        2. בצע את הפיזור החל מהיום ועד לדדליין של כל מטלה.
-        3. אל תעבור את המכסה של {daily_max_hours} שעות עבודה ביום.
-        
-        החזר:
-        1. טבלה בעברית (תאריך, מטלה, תת-משימה, שעות עבודה).
-        2. בלוק JSON בסוף עם title, date (YYYY-MM-DD), start_time.
+        החזר טבלה בעברית (תאריך, מטלה, תת-משימה, שעות) ובלוק JSON בסוף לייצוא ליומן.
         """
-        with st.spinner("מחשב לו''ז ומדלג על אילוצים..."):
+        with st.spinner("מחשב פיזור אופטימלי..."):
             res = model.generate_content(final_prompt).text
             st.markdown(res)
             if "```json" in res:
                 st.session_state.last_sched = json.loads(res.split("```json")[1].split("```")[0].strip())
 
-# --- 7. ייצוא ---
+# --- 8. ייצוא ---
 if 'last_sched' in st.session_state:
     c = Calendar()
     for item in st.session_state.last_sched:
