@@ -97,7 +97,7 @@ st.divider()
 if st.button("🚀 חשב לו''ז מפורט וסנכרן ליומן"):
     if st.session_state.extracted_tasks:
         final_prompt = f"""
-        פזר את המטלות האלו בלו"ז: {st.session_state.extracted_tasks}
+        אתה מתכנן לוחות זמנים מקצועי לסטודנטים. פזר את המטלות האלו בלו"ז: {st.session_state.extracted_tasks}
         אילוצים (זמן תפוס): {day_constraints}.
         מגבלת שעות עבודה ביום: {daily_max_hours}.
         
