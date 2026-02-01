@@ -1471,61 +1471,88 @@ with col_a:
 with col_b:
     explain_clicked = st.button("🧠 צור הסבר והמלצות (אופציונלי)", type="secondary")
 
-if compute_clicked:
-    tasks = df_to_tasks(st.session_state.tasks_df)
-
-    if not tasks:
-        st.warning("לא נמצאו מטלות תקינות. ודא שיש דדליין בפורמט YYYY-MM-DD ושעות משוערות.")
-    else:
-        weekday_blocks = df_to_weekday_blocks(st.session_state.weekday_blocks_df)
-        date_blocks = df_to_date_blocks(st.session_state.date_blocks_df)
-
-        workday_start_str = workday_start_t.strftime("%H:%M")
-        workday_end_str = workday_end_t.strftime("%H:%M")
 
 def _count_missing_deadlines(df: pd.DataFrame) -> int:
     if df is None or df.empty or "deadline" not in df.columns:
         return 0
     return int(pd.to_datetime(df["deadline"], errors="coerce").isna().sum())
 
-# ... אחרי שהתקבל edited_tasks_df מה-form, ולפני schedule_tasks ...
 
-# חסימה רק אם המשתמש ביקש לחשב (לא במחיקה ולא בשמירה)
 if compute_clicked:
+    st.info("DEBUG: לחצת על כפתור החישוב", icon="🧪")
+
+    # 1) בדיקת דדליינים חסרים בטבלה (רק בחישוב)
     missing = _count_missing_deadlines(st.session_state["tasks_df"])
+    st.write({"DEBUG_missing_deadlines": missing})
+
     if missing > 0:
         st.error(f"יש {missing} מטלות ללא דדליין. מחק שורות ריקות או מלא תאריך ואז נסה שוב.")
         st.stop()
 
+    # 2) המרה למודל
+    tasks = df_to_tasks(st.session_state["tasks_df"])
+    st.write({"DEBUG_tasks_after_parse": len(tasks)})
 
-        schedule_params = {
-            "tasks": tasks,
-            "tz_name": tz_name.strip() or DEFAULT_TZ,
-            "year": int(year),
-            "month": int(month),
-            "work_start_hhmm": workday_start_str,
-            "work_end_hhmm": workday_end_str,
-            "daily_max_hours": float(daily_max_hours),
-            "max_task_hours_per_day": float(max_task_hours_per_day),
-            "slot_minutes": int(slot_minutes),
-            "buffer_hours": int(buffer_hours),
-            "weekday_blocks": weekday_blocks,
-            "date_blocks": date_blocks,
-        }
+    if not tasks:
+        st.warning("לא נמצאו מטלות תקינות. ודא שיש דדליין ושעות משוערות.")
+        st.stop()
 
-        # DEBUG חייב להיות כאן, כי כאן schedule_params קיים
-        st.write("DEBUG schedule_params keys:", list(schedule_params.keys()))
-        st.write("DEBUG tasks count:", len(schedule_params["tasks"]))
+    # 3) חסמים
+    weekday_blocks = df_to_weekday_blocks(st.session_state["weekday_blocks_df"])
+    date_blocks = df_to_date_blocks(st.session_state["date_blocks_df"])
 
-        with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
-            try:
-                events, report = schedule_tasks(**schedule_params)
-                st.session_state.events = events
-                st.session_state.report = report
-                st.success(f"הלו״ז הושלם בהצלחה. נוצרו {len(events)} משבצות עבודה.")
-            except Exception as e:
-                st.error("שגיאה בקריאה ל-schedule_tasks. פירוט מלא:")
-                st.exception(e)
+    # 4) חלון יום עבודה
+    workday_start_str = workday_start_t.strftime("%H:%M")
+    workday_end_str = workday_end_t.strftime("%H:%M")
+
+    # 5) פרמטרים לשיבוץ
+    schedule_params = {
+        "tasks": tasks,
+        "tz_name": tz_name.strip() or DEFAULT_TZ,
+        "year": int(year),
+        "month": int(month),
+        "work_start_hhmm": workday_start_str,
+        "work_end_hhmm": workday_end_str,
+        "daily_max_hours": float(daily_max_hours),
+        "max_task_hours_per_day": float(max_task_hours_per_day),
+        "slot_minutes": int(slot_minutes),
+        "buffer_hours": int(buffer_hours),
+        "weekday_blocks": weekday_blocks,
+        "date_blocks": date_blocks,
+    }
+
+    st.write("DEBUG schedule_params keys:", list(schedule_params.keys()))
+    st.write("DEBUG tasks sample:", [{"id": t.task_id, "deadline": str(t.deadline)} for t in tasks[:3]])
+
+    # 6) הרצת שיבוץ
+    with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
+        try:
+            events, report = schedule_tasks(**schedule_params)
+
+            st.session_state["events"] = events
+            st.session_state["report"] = report
+
+            st.success(f"הלו״ז הושלם בהצלחה. נוצרו {len(events)} משבצות עבודה.")
+
+            # הצגה מינימלית כדי שלא יהיה "שקט"
+            if len(events) == 0:
+                st.warning("לא נוצרו אירועים. בדוק חלונות עבודה, מגבלות יומיות, וחסמים.")
+                st.write(report)
+            else:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "תאריך": ev.start_dt.strftime("%d/%m/%Y"),
+                        "התחלה": ev.start_dt.strftime("%H:%M"),
+                        "סיום": ev.end_dt.strftime("%H:%M"),
+                        "כותרת": ev.title,
+                    } for ev in events]),
+                    use_container_width=True
+                )
+
+        except Exception as e:
+            st.error("שגיאה בקריאה ל-schedule_tasks. פירוט מלא:")
+            st.exception(e)
+            st.stop()
 
 # =========================
 # Display schedule + export
