@@ -598,6 +598,36 @@ def schedule_tasks(
     break_delta = timedelta(minutes=int(max(0, break_minutes)))
     max_continuous = int(max(0, max_continuous_minutes))
 
+    # -------------------------
+    # Optional: add constraints as calendar events
+    # -------------------------
+    constraint_events: List[Event] = []
+
+    def _add_constraint_event(d: date, bs: time, be: time, label: str, kind: str):
+        # guard
+        if bs >= be:
+            return
+        sdt = datetime.combine(d, bs, tzinfo=tz)
+        edt = datetime.combine(d, be, tzinfo=tz)
+        title = f"⛔ חסם: {label}".strip()
+        desc = f"חסם ({kind})."
+        constraint_events.append(Event(title=title, start_dt=sdt, end_dt=edt, description=desc))
+
+    # 1) Weekly blocks -> expand to concrete dates in the selected month
+    for d in daterange(month_start, month_end_excl):
+        wd = d.weekday()
+        for (bs, be) in weekday_blocks_t.get(wd, []):
+            _add_constraint_event(d, bs, be, "אילוץ שבועי", "weekday")
+
+    # 2) Date-specific blocks
+    for d, blocks in date_blocks_t.items():
+        if month_start <= d < month_end_excl:
+            for (bs, be) in blocks:
+                _add_constraint_event(d, bs, be, "אילוץ בתאריך", "date")
+
+    # Merge: include constraint events in output (so they export to ICS)
+    events.extend(constraint_events)
+
     def reorder_slots_spread(slots: List[Tuple[datetime, datetime]]) -> List[Tuple[datetime, datetime]]:
         """
         Reorders slots to encourage within-day spreading:
@@ -614,7 +644,8 @@ def schedule_tasks(
 
         out: List[Tuple[datetime, datetime]] = []
         i = j = 0
-        take_afternoon = True
+        # Start alternating side per date to balance: even days -> morning first, odd -> afternoon first
+        take_afternoon = (day.day % 2 == 1)
 
         while i < len(morning) or j < len(afternoon):
             if take_afternoon and j < len(afternoon):
@@ -622,10 +653,10 @@ def schedule_tasks(
             elif (not take_afternoon) and i < len(morning):
                 out.append(morning[i]); i += 1
             else:
-                if j < len(afternoon):
-                    out.append(afternoon[j]); j += 1
-                elif i < len(morning):
+                if i < len(morning):
                     out.append(morning[i]); i += 1
+                elif j < len(afternoon):
+                    out.append(afternoon[j]); j += 1
             take_afternoon = not take_afternoon
 
         return out
