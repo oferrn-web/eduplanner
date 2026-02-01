@@ -37,6 +37,34 @@ DEFAULT_MAX_TASK_HOURS_PER_DAY = 3.0
 DEFAULT_SLOT_MINUTES = 60
 DEFAULT_BUFFER_HOURS = 48
 
+st.markdown(
+    """
+    <style>
+    html, body, [class*="st-"] {
+        direction: rtl;
+        text-align: right;
+        font-family: "Arial", "Rubik", sans-serif;
+    }
+
+    textarea, input {
+        direction: rtl;
+        text-align: right;
+    }
+
+    /* Data editor */
+    div[data-testid="stDataEditor"] {
+        direction: rtl;
+    }
+
+    /* Keep numbers LTR */
+    .ltr {
+        direction: ltr;
+        text-align: left;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 # ===== constants =====
 TASK_COLS = ["task_id", "course", "title", "deadline", "estimated_hours", "priority", "notes"]
 
@@ -977,29 +1005,33 @@ with st.form("planner_form", clear_on_submit=False):
 
     st.markdown("## הזנת מטלות 📝")
 
+    st.info(
+        "ניתן להזין מטלות ידנית בטבלה, או להדביק טקסט חופשי בפורמט חופשי.",
+        icon="💡",
+    )
+
     edited_tasks_df = st.data_editor(
-        st.session_state.tasks_df,
+        st.session_state["tasks_df"],
         use_container_width=True,
         num_rows="dynamic",
         key="tasks_editor_main",
+        column_config={
+            "task_id": st.column_config.TextColumn("מזהה"),
+            "course": st.column_config.TextColumn("שם הקורס"),
+            "title": st.column_config.TextColumn("שם המטלה"),
+            "deadline": st.column_config.DateColumn("דדליין", format="DD/MM/YYYY"),
+            "estimated_hours": st.column_config.NumberColumn("שעות משוערות"),
+            "priority": st.column_config.NumberColumn("עדיפות (1–5)"),
+            "notes": st.column_config.TextColumn("הערות"),
+        },
     )
 
-    st.divider()
+    st.markdown("### הדבקת מטלות בטקסט חופשי")
 
-    st.markdown("## חסמים ⛔")
-
-    edited_wd_df = st.data_editor(
-        st.session_state.weekday_blocks_df,
-        use_container_width=True,
-        num_rows="dynamic",
-        key="weekday_blocks_editor",
-    )
-
-    edited_date_df = st.data_editor(
-        st.session_state.date_blocks_df,
-        use_container_width=True,
-        num_rows="dynamic",
-        key="date_blocks_editor",
+    free_text = st.text_area(
+        "הדבק כאן",
+        placeholder="לדוגמה:\nביולוגיה | עבודה סמינריונית | 01/02/2026 | 12 | עדיפות 5",
+        height=120,
     )
 
     col1, col2 = st.columns(2)
@@ -1008,13 +1040,33 @@ with st.form("planner_form", clear_on_submit=False):
         save_clicked = st.form_submit_button("💾 שמור נתונים")
 
     with col2:
-        compute_clicked = st.form_submit_button("🚀 חשב לו״ז", type="primary")
+        compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
 
 # מחוץ ל-form: commit ל-session_state
 if save_clicked or compute_clicked:
     st.session_state["tasks_df"] = edited_tasks_df
-    st.session_state.weekday_blocks_df = edited_wd_df
-    st.session_state.date_blocks_df = edited_date_df
+
+    if free_text.strip():
+        parsed = try_ai_parse_tasks(free_text)
+        if parsed:
+            add_df = pd.DataFrame(
+                [
+                    {
+                        "task_id": t.task_id,
+                        "course": t.course,
+                        "title": t.title,
+                        "deadline": t.deadline,
+                        "estimated_hours": t.estimated_hours,
+                        "priority": t.priority,
+                        "notes": t.notes,
+                    }
+                    for t in parsed
+                ]
+            )
+            st.session_state["tasks_df"] = pd.concat(
+                [st.session_state["tasks_df"], add_df],
+                ignore_index=True,
+            )
 
 def parse_date_any(s: str) -> date:
     s = (s or "").strip()
