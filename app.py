@@ -352,7 +352,7 @@ def generate_daily_slots(
 
 
 # =========================
-# Deterministic Scheduling Engine
+# Deterministic Scheduling Engine (with occupancy + progression)
 # =========================
 def schedule_tasks(
     tasks: List[Task],
@@ -371,16 +371,20 @@ def schedule_tasks(
     """
     Returns (events, report).
     report includes validation flags and unscheduled work.
+
+    Key properties:
+    - No overlaps: slot-level occupancy is enforced (occupied_start_times by date).
+    - Time progression: allocation consumes unique slots; it never reuses the same HH:MM on the same date.
+    - Respects weekday/date blocks, work window, daily max minutes, and max per task per day.
     """
     tz = ZoneInfo(tz_name)
 
     work_start = parse_hhmm(work_start_hhmm)
     work_end = parse_hhmm(work_end_hhmm)
 
-    # Convert blocks into time objects
     weekday_blocks_t: Dict[int, List[Tuple[time, time]]] = {}
-    for wd, blocks in weekday_blocks.items():
-        out = []
+    for wd, blocks in (weekday_blocks or {}).items():
+        out: List[Tuple[time, time]] = []
         for s, e in blocks:
             try:
                 out.append((parse_hhmm(s), parse_hhmm(e)))
@@ -389,12 +393,12 @@ def schedule_tasks(
         weekday_blocks_t[wd] = out
 
     date_blocks_t: Dict[date, List[Tuple[time, time]]] = {}
-    for ds, blocks in date_blocks.items():
+    for ds, blocks in (date_blocks or {}).items():
         try:
             d = datetime.strptime(ds, "%Y-%m-%d").date()
         except Exception:
             continue
-        out = []
+        out: List[Tuple[time, time]] = []
         for s, e in blocks:
             try:
                 out.append((parse_hhmm(s), parse_hhmm(e)))
@@ -405,26 +409,28 @@ def schedule_tasks(
     month_start, month_end_excl = month_date_range(year, month)
     now_dt = datetime.now(tz=tz)
 
-    # Sort tasks by (deadline, priority desc, hours desc)
     tasks_sorted = sorted(
         tasks,
-        key=lambda t: (t.deadline, -int(clamp_float(t.priority, 1, 5)), -t.estimated_hours),
+        key=lambda t: (t.deadline, -int(clamp_float(t.priority, 1, 5)), -float(t.estimated_hours)),
     )
 
-    # Build day slots for the month
     day_slots: Dict[date, List[Tuple[datetime, datetime]]] = {}
     for d in daterange(month_start, month_end_excl):
         windows = build_daily_available_windows(d, tz, work_start, work_end, weekday_blocks_t, date_blocks_t)
         slots = generate_daily_slots(windows, slot_minutes)
         day_slots[d] = slots
 
-    # Track used time per day and per task/day
-    used_minutes_by_day: Dict[date, int] = {d: 0 for d in day_slots.keys()}
-    used_minutes_by_task_day: Dict[Tuple[str, date], int] = {}
-
     daily_max_minutes = int(daily_max_hours * 60)
     max_task_minutes_per_day = int(max_task_hours_per_day * 60)
     buffer_delta = timedelta(hours=buffer_hours)
+
+    used_minutes_by_day: Dict[date, int] = {d: 0 for d in day_slots.keys()}
+    used_minutes_by_task_day: Dict[Tuple[str, date], int] = {}
+
+    # Occupancy: prevent reusing the same start time for multiple events on the same date
+    # and optionally track (start_dt, end_dt) to guard against non-uniform slot sizes.
+    occupied_starts_by_day: Dict[date, set] = {d: set() for d in day_slots.keys()}
+    occupied_ranges_by_day: Dict[date, List[Tuple[datetime, datetime]]] = {d: [] for d in day_slots.keys()}
 
     events: List[Event] = []
     unscheduled: List[Dict] = []
@@ -436,21 +442,34 @@ def schedule_tasks(
         key = (task_id, d)
         return used_minutes_by_task_day.get(key, 0) + add_minutes <= max_task_minutes_per_day
 
-    # For each task, allocate required minutes into slots before (deadline - buffer)
+    def slot_is_free(d: date, s_dt: datetime, e_dt: datetime) -> bool:
+        # Fast path: prevent exact same start-time collisions
+        s_key = s_dt.strftime("%H:%M")
+        if s_key in occupied_starts_by_day.get(d, set()):
+            return False
+        # Robust path: prevent any overlap with already-booked ranges on that day
+        for a, b in occupied_ranges_by_day.get(d, []):
+            if s_dt < b and e_dt > a:
+                return False
+        return True
+
+    def mark_slot_used(d: date, s_dt: datetime, e_dt: datetime) -> None:
+        occupied_starts_by_day.setdefault(d, set()).add(s_dt.strftime("%H:%M"))
+        occupied_ranges_by_day.setdefault(d, []).append((s_dt, e_dt))
+
+    # For each task, allocate minutes into FREE slots before (deadline - buffer)
     for t in tasks_sorted:
-        remaining_minutes = int(max(0.0, t.estimated_hours) * 60)
-        if remaining_minutes == 0:
+        remaining_minutes = int(max(0.0, float(t.estimated_hours)) * 60)
+        if remaining_minutes <= 0:
             continue
 
         deadline_dt = datetime.combine(t.deadline, time(23, 59), tzinfo=tz)
         latest_allowed = deadline_dt - buffer_delta
 
-        # Candidate days: from today or month start (whichever later) up to latest_allowed (and within month)
         start_day = max(month_start, now_dt.date())
         end_day = min(month_end_excl - timedelta(days=1), latest_allowed.date())
 
         if end_day < start_day:
-            # No feasible time window in this month
             unscheduled.append(
                 {
                     "task_id": t.task_id,
@@ -462,8 +481,8 @@ def schedule_tasks(
             )
             continue
 
-        # Greedy fill: earliest feasible slot first, while balancing by not saturating days
-        # A simple heuristic: for each day, iterate slots, but skip days that are already near limit
+        # Greedy fill with light load-balancing:
+        # iterate days in chronological order, but skip days too close to daily max.
         for d in daterange(start_day, end_day + timedelta(days=1)):
             if remaining_minutes <= 0:
                 break
@@ -472,7 +491,6 @@ def schedule_tasks(
             if not slots:
                 continue
 
-            # If day already close to max, deprioritize it
             day_load_ratio = used_minutes_by_day.get(d, 0) / max(1, daily_max_minutes)
             if day_load_ratio >= 0.95:
                 continue
@@ -485,20 +503,41 @@ def schedule_tasks(
                 if slot_len <= 0:
                     continue
 
-                if not day_has_capacity(d, slot_len):
-                    continue
-                if not task_day_has_capacity(t.task_id, d, slot_len):
+                # If remaining work is less than a full slot, optionally allow a shorter final slot
+                # by trimming the end time (keeps "progression" and reduces over-allocation).
+                alloc_minutes = min(slot_len, remaining_minutes)
+                if alloc_minutes <= 0:
                     continue
 
-                # Book this slot
+                # Enforce per-day and per-task-per-day caps
+                if not day_has_capacity(d, alloc_minutes):
+                    continue
+                if not task_day_has_capacity(t.task_id, d, alloc_minutes):
+                    continue
+
+                s_alloc = s_dt
+                e_alloc = s_dt + timedelta(minutes=alloc_minutes)
+
+                # Occupancy check (prevents overlaps and repeated 08:00)
+                if not slot_is_free(d, s_alloc, e_alloc):
+                    continue
+
                 title = f"{t.course} | {t.title}".strip(" |")
-                desc = f"משימת לימודים מתוכננת.\nדדליין: {t.deadline.isoformat()}\nעדיפות: {t.priority}\n{t.notes}".strip()
-                events.append(Event(title=title, start_dt=s_dt, end_dt=e_dt, description=desc))
+                desc = (
+                    f"משימת לימודים מתוכננת.\n"
+                    f"דדליין: {t.deadline.isoformat()}\n"
+                    f"עדיפות: {t.priority}\n"
+                    f"{t.notes}"
+                ).strip()
 
-                used_minutes_by_day[d] = used_minutes_by_day.get(d, 0) + slot_len
+                events.append(Event(title=title, start_dt=s_alloc, end_dt=e_alloc, description=desc))
+
+                used_minutes_by_day[d] = used_minutes_by_day.get(d, 0) + alloc_minutes
                 key = (t.task_id, d)
-                used_minutes_by_task_day[key] = used_minutes_by_task_day.get(key, 0) + slot_len
-                remaining_minutes -= slot_len
+                used_minutes_by_task_day[key] = used_minutes_by_task_day.get(key, 0) + alloc_minutes
+                remaining_minutes -= alloc_minutes
+
+                mark_slot_used(d, s_alloc, e_alloc)
 
         if remaining_minutes > 0:
             unscheduled.append(
@@ -511,23 +550,21 @@ def schedule_tasks(
                 }
             )
 
-    # Post validation
     validation = validate_schedule(events, tz, daily_max_minutes, weekday_blocks_t, date_blocks_t)
     report = {
         "tz": tz_name,
         "month": f"{year:04d}-{month:02d}",
-        "daily_max_hours": daily_max_hours,
+        "daily_max_hours": float(daily_max_hours),
         "work_start": work_start_hhmm,
         "work_end": work_end_hhmm,
-        "slot_minutes": slot_minutes,
-        "max_task_hours_per_day": max_task_hours_per_day,
-        "buffer_hours": buffer_hours,
+        "slot_minutes": int(slot_minutes),
+        "max_task_hours_per_day": float(max_task_hours_per_day),
+        "buffer_hours": int(buffer_hours),
         "unscheduled": unscheduled,
         "validation": validation,
         "events_count": len(events),
     }
 
-    # Sort events chronologically
     events.sort(key=lambda ev: ev.start_dt)
     return events, report
 
@@ -539,13 +576,13 @@ def validate_schedule(
     weekday_blocks: Dict[int, List[Tuple[time, time]]],
     date_blocks: Dict[date, List[Tuple[time, time]]],
 ) -> Dict:
-    # Check overlaps, daily max, blocks
     overlaps = []
     blocked_hits = []
     daily_minutes: Dict[date, int] = {}
 
-    # Overlaps (within same day)
     events_sorted = sorted(events, key=lambda e: (e.start_dt, e.end_dt))
+
+    # Overlaps
     for i in range(1, len(events_sorted)):
         prev = events_sorted[i - 1]
         cur = events_sorted[i]
@@ -573,7 +610,6 @@ def validate_schedule(
         d = ev.start_dt.date()
         wd = d.weekday()
 
-        # check weekday blocks
         for bs, be in weekday_blocks.get(wd, []):
             bsd = datetime.combine(d, bs, tzinfo=tz)
             bed = datetime.combine(d, be, tzinfo=tz)
@@ -585,7 +621,6 @@ def validate_schedule(
                     }
                 )
 
-        # check date blocks
         for bs, be in date_blocks.get(d, []):
             bsd = datetime.combine(d, bs, tzinfo=tz)
             bed = datetime.combine(d, be, tzinfo=tz)
@@ -606,7 +641,6 @@ def validate_schedule(
         "blocked_hits": blocked_hits[:10],
         "ok": (len(overlaps) == 0 and len(daily_exceed) == 0 and len(blocked_hits) == 0),
     }
-
 
 # =========================
 # ICS Export
@@ -659,20 +693,22 @@ def to_ics(events: List[Event], tz_name: str, cal_name: str = "EduPlanner") -> s
 def try_ai_parse_tasks(free_text: str) -> List[Task]:
     """
     Optional: parse tasks from free text.
-    This function is intentionally conservative and deterministic, no external model calls.
-    You can replace its internals with your AI provider, but keep the output schema identical.
+    Conservative + deterministic, no external model calls.
 
-    Expected patterns (examples):
-      - קורס: X, מטלה: Y, דדליין: 2026-02-14, שעות: 6
+    Supports date formats:
+      - YYYY-MM-DD
+      - DD/MM/YYYY
+
+    Example lines:
+      - "ביולוגיה | עבודה סמינריונית | 2026-03-10 | 12 | עדיפות 5"
+      - "ביולוגיה | עבודה סמינריונית | 10/03/2026 | 12 | עדיפות 5"
     """
     tasks: List[Task] = []
     if not free_text or not free_text.strip():
         return tasks
 
-    # Very simple pattern, one task per line, flexible separators
-    # Example line: "ביולוגיה | עבודה סמינריונית | 2026-03-10 | 12 | עדיפות 5"
     for i, line in enumerate(free_text.splitlines(), start=1):
-        line = line.strip()
+        line = (line or "").strip()
         if not line:
             continue
 
@@ -683,22 +719,43 @@ def try_ai_parse_tasks(free_text: str) -> List[Task]:
         course = parts[0]
         title = parts[1]
 
-        # Find a date
-        d_match = re.search(r"(\d{4}-\d{2}-\d{2})", line)
-        if not d_match:
+        # Find a date in either ISO or EU format
+        date_str = None
+        m_iso = re.search(r"(\d{4}-\d{2}-\d{2})", line)
+        m_eu = re.search(r"(\d{2}/\d{2}/\d{4})", line)
+
+        if m_iso:
+            date_str = m_iso.group(1)
+        elif m_eu:
+            date_str = m_eu.group(1)
+
+        if not date_str:
             continue
+
         try:
-            dl = datetime.strptime(d_match.group(1), "%Y-%m-%d").date()
+            dl = parse_date_any(date_str)
         except Exception:
             continue
 
-        # Find hours
-        h_match = re.search(r"(?:שעות|hrs|hours)?\s*[:=]?\s*(\d+(?:\.\d+)?)", line, flags=re.IGNORECASE)
+        # Find hours (accepts: "12", "12.5", "שעות: 12", "hours=12")
+        h_match = re.search(
+            r"(?:שעות|hrs|hours)?\s*[:=]?\s*(\d+(?:\.\d+)?)",
+            line,
+            flags=re.IGNORECASE,
+        )
         est = float(h_match.group(1)) if h_match else 3.0
 
-        # Find priority 1..5
-        p_match = re.search(r"(?:עדיפות|priority)\s*[:=]?\s*([1-5])", line, flags=re.IGNORECASE)
+        # Find priority 1..5 (accepts: "עדיפות 4", "priority:5")
+        p_match = re.search(
+            r"(?:עדיפות|priority)\s*[:=]?\s*([1-5])",
+            line,
+            flags=re.IGNORECASE,
+        )
         pr = int(p_match.group(1)) if p_match else 3
+
+        # Basic sanity clamps
+        est = max(0.0, float(est))
+        pr = int(clamp_float(pr, 1, 5))
 
         tasks.append(
             Task(
@@ -713,7 +770,6 @@ def try_ai_parse_tasks(free_text: str) -> List[Task]:
         )
 
     return tasks
-
 
 # =========================
 # UI
@@ -842,123 +898,72 @@ with tab_reset:
 # -------------------------
 # Main: Task input
 # -------------------------
-st.markdown("## הזנת מטלות 📝")
-st.info("מומלץ להזין מטלות בצורה מובנית. ניתן גם להדביק טקסט חופשי, ואז לבצע חילוץ.", icon="💡")
+with st.form("planner_inputs", clear_on_submit=False):
+    st.markdown("## הזנת מטלות 📝")
 
-TASK_COLS = ["task_id", "course", "title", "deadline", "estimated_hours", "priority", "notes"]
-
-if "tasks_df" not in st.session_state:
-    st.session_state.tasks_df = pd.DataFrame(
-        [
-            {"task_id": "T1", "course": "קורס לדוגמה", "title": "עבודה מסכמת", "deadline": f"{year:04d}-{month:02d}-20", "estimated_hours": 6.0, "priority": 4, "notes": ""},
-            {"task_id": "T2", "course": "קורס לדוגמה", "title": "קריאת מאמר", "deadline": f"{year:04d}-{month:02d}-12", "estimated_hours": 3.0, "priority": 3, "notes": ""},
-        ],
-        columns=TASK_COLS
-    )
-else:
-    # שמירה על סדר עמודות גם אם משהו השתנה
-    for c in TASK_COLS:
-        if c not in st.session_state.tasks_df.columns:
-            st.session_state.tasks_df[c] = ""
-    st.session_state.tasks_df = st.session_state.tasks_df[TASK_COLS]
-
-edited_tasks_df = st.data_editor(
-    st.session_state.tasks_df,
-    use_container_width=True,
-    num_rows="dynamic",
-    column_config={
-        "task_id": st.column_config.TextColumn("מזהה", help="מזהה פנימי קצר, למשל T1"),
-        "course": st.column_config.TextColumn("שם הקורס"),
-        "title": st.column_config.TextColumn("שם המטלה"),
-        "deadline": st.column_config.TextColumn("דדליין (YYYY-MM-DD)", help="לדוגמה: 2026-03-10"),
-        "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
-        "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
-        "notes": st.column_config.TextColumn("הערות"),
-    },
-    key="tasks_editor",
-)
-
-# חשוב: לאכוף שוב סדר עמודות אחרי עריכה
-for c in TASK_COLS:
-    if c not in edited_tasks_df.columns:
-        edited_tasks_df[c] = ""
-st.session_state.tasks_df = edited_tasks_df[TASK_COLS]
-
-with st.expander("הדבקת מטלות בטקסט חופשי (אופציונלי)", expanded=False):
-    st.caption("דוגמה לשורה: קורס | מטלה | 2026-03-10 | 12 | עדיפות 5")
-    free_text = st.text_area("הדבק כאן", height=120, placeholder="לדוגמה:\nביולוגיה | עבודה סמינריונית | 2026-03-10 | 12 | עדיפות 5")
-    if st.button("🔎 חלץ מטלות מהטקסט", type="secondary"):
-        parsed = try_ai_parse_tasks(free_text)
-        if not parsed:
-            st.warning("לא הצלחתי לחלץ מטלות בטוחות מהטקסט. נסה פורמט כמו בדוגמה.")
-        else:
-            add_df = pd.DataFrame([{
-                "task_id": t.task_id,
-                "course": t.course,
-                "title": t.title,
-                "deadline": t.deadline.isoformat(),
-                "estimated_hours": float(t.estimated_hours),
-                "priority": int(t.priority),
-                "notes": t.notes,
-            } for t in parsed])
-            st.session_state.tasks_df = pd.concat([st.session_state.tasks_df, add_df], ignore_index=True)
-            st.success(f"נוספו {len(parsed)} מטלות לטבלה.")
-
-
-# -------------------------
-# Constraints input
-# -------------------------
-st.divider()
-st.markdown("## הגדרת חסמים ⛔")
-st.caption("מטרת החסמים: למנוע שיבוץ בתוך זמנים תפוסים. אפשר להגדיר חסמים שבועיים קבועים וחסמים בתאריכים ספציפיים.")
-
-# Weekday blocks table
-if "weekday_blocks_df" not in st.session_state:
-    st.session_state.weekday_blocks_df = pd.DataFrame(
-        [
-            {"weekday": "שני", "start": "17:00", "end": "19:00", "label": "עבודה/לימודים"},
-            {"weekday": "רביעי", "start": "08:00", "end": "12:00", "label": "קורס קבוע"},
-        ]
+    edited_tasks_df = st.data_editor(
+        st.session_state.tasks_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "task_id": st.column_config.TextColumn("מזהה"),
+            "course": st.column_config.TextColumn("שם הקורס"),
+            "title": st.column_config.TextColumn("שם המטלה"),
+            "deadline": st.column_config.DateColumn("דדליין", format="DD/MM/YYYY"),
+            "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
+            "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
+            "notes": st.column_config.TextColumn("הערות"),
+        },
+        key="w_tasks_editor_main",
     )
 
-st.markdown("### חסמים שבועיים קבועים")
-edited_wd_df = st.data_editor(
-    st.session_state.weekday_blocks_df,
-    use_container_width=True,
-    num_rows="dynamic",
-    column_config={
-        "weekday": st.column_config.SelectboxColumn("יום", options=WEEKDAYS_HE),
-        "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-        "end": st.column_config.TextColumn("סיום (HH:MM)"),
-        "label": st.column_config.TextColumn("תיאור"),
-    },
-    key="weekday_blocks_editor",
-)
-st.session_state.weekday_blocks_df = edited_wd_df
+    st.markdown("## הגדרת חסמים ⛔")
 
-# Date-specific blocks
-if "date_blocks_df" not in st.session_state:
-    st.session_state.date_blocks_df = pd.DataFrame(
-        [
-            {"date": f"{year:04d}-{month:02d}-10", "start": "18:00", "end": "22:00", "label": "מחויבות מיוחדת"},
-        ]
+    edited_wd_df = st.data_editor(
+        st.session_state.weekday_blocks_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "weekday": st.column_config.SelectboxColumn("יום", options=WEEKDAYS_HE),
+            "start": st.column_config.TextColumn("התחלה (HH:MM)"),
+            "end": st.column_config.TextColumn("סיום (HH:MM)"),
+            "label": st.column_config.TextColumn("תיאור"),
+        },
+        key="weekday_blocks_editor",
     )
 
-st.markdown("### חסמים בתאריכים ספציפיים")
-edited_date_df = st.data_editor(
-    st.session_state.date_blocks_df,
-    use_container_width=True,
-    num_rows="dynamic",
-    column_config={
-        "date": st.column_config.TextColumn("תאריך (YYYY-MM-DD)"),
-        "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-        "end": st.column_config.TextColumn("סיום (HH:MM)"),
-        "label": st.column_config.TextColumn("תיאור"),
-    },
-    key="date_blocks_editor",
-)
-st.session_state.date_blocks_df = edited_date_df
+    edited_date_df = st.data_editor(
+        st.session_state.date_blocks_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "date": st.column_config.DateColumn("תאריך", format="DD/MM/YYYY"),
+            "start": st.column_config.TextColumn("התחלה (HH:MM)"),
+            "end": st.column_config.TextColumn("סיום (HH:MM)"),
+            "label": st.column_config.TextColumn("תיאור"),
+        },
+        key="date_blocks_editor",
+    )
 
+    col1, col2 = st.columns(2)
+    with col1:
+        save_clicked = st.form_submit_button("💾 שמור נתונים")
+    with col2:
+        compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
+
+if save_clicked or compute_clicked:
+    st.session_state.tasks_df = edited_tasks_df
+    st.session_state.weekday_blocks_df = edited_wd_df
+    st.session_state.date_blocks_df = edited_date_df
+
+def parse_date_any(s: str) -> date:
+    s = (s or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+    raise ValueError("Bad date format. Expected YYYY-MM-DD or DD/MM/YYYY.")
 
 # -------------------------
 # Convert UI tables to model inputs
@@ -975,9 +980,10 @@ def df_to_tasks(df: pd.DataFrame) -> List[Task]:
             continue
 
         try:
-            dl = datetime.strptime(dl_raw, "%Y-%m-%d").date()
+            dl = parse_date_any(dl_raw)
         except Exception:
             continue
+
 
         est = safe_float(row.get("estimated_hours"), 0.0)
         pr = safe_int(row.get("priority"), 3)
