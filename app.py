@@ -884,32 +884,6 @@ for c in TASK_COLS:
         edited_tasks_df[c] = ""
 st.session_state.tasks_df = edited_tasks_df[TASK_COLS]
 
-# Default tasks table
-if "tasks_df" not in st.session_state:
-    st.session_state.tasks_df = pd.DataFrame(
-        [
-            {"task_id": "T1", "course": "קורס לדוגמה", "title": "עבודה מסכמת", "deadline": f"{year:04d}-{month:02d}-20", "estimated_hours": 6.0, "priority": 4, "notes": ""},
-            {"task_id": "T2", "course": "קורס לדוגמה", "title": "קריאת מאמר", "deadline": f"{year:04d}-{month:02d}-12", "estimated_hours": 3.0, "priority": 3, "notes": ""},
-        ]
-    )
-
-edited_tasks_df = st.data_editor(
-    st.session_state.tasks_df,
-    use_container_width=True,
-    num_rows="dynamic",
-    column_config={
-        "task_id": st.column_config.TextColumn("מזהה", help="מזהה פנימי"),
-        "course": st.column_config.TextColumn("קורס"),
-        "title": st.column_config.TextColumn("מטלה"),
-        "deadline": st.column_config.TextColumn("דדליין (YYYY-MM-DD)"),
-        "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
-        "priority": st.column_config.NumberColumn("עדיפות 1-5", min_value=1, max_value=5, step=1),
-        "notes": st.column_config.TextColumn("הערות"),
-    },
-    key="tasks_editor",
-)
-st.session_state.tasks_df = edited_tasks_df
-
 with st.expander("הדבקת מטלות בטקסט חופשי (אופציונלי)", expanded=False):
     st.caption("דוגמה לשורה: קורס | מטלה | 2026-03-10 | 12 | עדיפות 5")
     free_text = st.text_area("הדבק כאן", height=120, placeholder="לדוגמה:\nביולוגיה | עבודה סמינריונית | 2026-03-10 | 12 | עדיפות 5")
