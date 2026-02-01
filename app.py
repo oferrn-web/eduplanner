@@ -53,10 +53,143 @@ except:
     st.stop()
 
 # =========================
-# RTL Settings
+# RTL + Hebrew localization (Streamlit)
+# Put this near the top of app.py (after st.set_page_config), before rendering UI.
+# Goal: enforce RTL layout, Hebrew-friendly typography, correct alignment for labels,
+# and keep numbers/dates readable (LTR) inside an RTL interface.
 # =========================
-st.set_page_config(page_title="מתכנן המטלות האקדמי", layout="wide")
-st.markdown("<style> .stApp { direction: RTL; text-align: right; } </style>", unsafe_allow_html=True)
+
+def apply_hebrew_rtl_ui(app_title: str = "מתכנן המטלות האקדמי שלי 🎓") -> None:
+    st.markdown(
+        f"""
+        <style>
+        /* ---------- Global direction ---------- */
+        html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
+            direction: rtl;
+            text-align: right;
+        }}
+
+        /* Main container */
+        section.main > div {{
+            direction: rtl;
+        }}
+
+        /* Sidebar */
+        [data-testid="stSidebar"] {{
+            direction: rtl;
+            text-align: right;
+        }}
+        [data-testid="stSidebar"] * {{
+            direction: rtl;
+            text-align: right;
+        }}
+
+        /* Headings and text */
+        h1, h2, h3, h4, h5, h6, p, li, label, span, div {{
+            text-align: right;
+        }}
+
+        /* Inputs: align text to the right (Hebrew) */
+        input, textarea {{
+            direction: rtl;
+            text-align: right;
+        }}
+
+        /* BUT: force LTR for numeric/date/time fields to avoid confusion */
+        /* You can add class hooks via st.text_input(..., key="...") and target them if needed. */
+        input[type="number"], input[type="date"], input[type="time"] {{
+            direction: ltr;
+            text-align: left;
+        }}
+
+        /* Data editor / tables: keep overall RTL, but allow LTR in numeric cells */
+        [data-testid="stDataFrame"] {{
+            direction: rtl;
+        }}
+        [data-testid="stDataFrame"] table {{
+            direction: rtl;
+        }}
+        [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {{
+            text-align: right;
+            unicode-bidi: plaintext;
+        }}
+
+        /* Code blocks and JSON should remain LTR */
+        pre, code, .stCodeBlock, [data-testid="stCodeBlock"] {{
+            direction: ltr !important;
+            text-align: left !important;
+        }}
+
+        /* Buttons alignment */
+        button {{
+            direction: rtl;
+        }}
+
+        /* Small polish: consistent spacing */
+        .block-container {{
+            padding-top: 2.2rem;
+            padding-bottom: 2rem;
+        }}
+
+        /* Optional: slightly improve readability on dark theme */
+        .he-hint {{
+            opacity: 0.88;
+        }}
+        </style>
+
+        <!-- Set document language for accessibility and better text handling -->
+        <script>
+        document.documentElement.lang = "he";
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Optional: a clean RTL title row that stays consistent
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; justify-content:flex-start; gap:0.6rem;">
+          <h1 style="margin:0; direction:rtl; text-align:right;">{app_title}</h1>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# Call once early in your app, after st.set_page_config(...)
+apply_hebrew_rtl_ui(APP_TITLE)
+
+# =========================
+# Hebrew-first constants (optional centralization)
+# Keep UI text in one place to avoid mixed-language drift.
+# =========================
+UI = {
+    "caption": "הזנת מטלות, חישוב לו״ז חודשי דטרמיניסטי, וייצוא לקובץ ICS ליומן Google. עיצוב נקי, תכנון אמין.",
+    "settings_header": "הגדרות מערכת ⚙️",
+    "timezone": "אזור זמן (TZID)",
+    "choose_year": "בחר שנת לימודים",
+    "choose_month": "בחר חודש לתכנון",
+    "daily_planning": "תכנון זמן יומי",
+    "daily_max": "כמה שעות מקסימליות ביום?",
+    "day_start": "מתי להתחיל את היום? (HH:MM)",
+    "day_end": "מתי לסיים את היום? (HH:MM)",
+    "rules": "כללי שיבוץ",
+    "max_task_per_day": "מקסימום שעות לאותה מטלה ביום",
+    "slot_minutes": "גודל משבצת (דקות)",
+    "buffer": "מרווח ביטחון לפני דדליין (שעות)",
+    "clear_all": "🧹 ניקוי כל הנתונים",
+    "tasks_title": "הזנת מטלות 📝",
+    "tasks_hint": "מומלץ להזין מטלות בצורה מובנית. ניתן גם להדביק טקסט חופשי, ואז לבצע חילוץ בסיסי.",
+    "constraints_title": "הגדרת חסמים ⛔",
+    "compute_title": "חישוב לו״ז אסטרטגי וחכם 🚀",
+    "compute_btn": "🚀 חשב לו״ז אסטרטגי וחכם",
+    "explain_btn": "🧠 צור הסבר והמלצות (אופציונלי)",
+    "download_ics": "⬇️ הורד קובץ ICS (Google Calendar)",
+}
+
+# Usage example:
+# st.sidebar.header(UI["settings_header"])
+# st.caption(UI["caption"])
 
 # =========================
 # Utilities
