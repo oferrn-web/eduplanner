@@ -499,6 +499,9 @@ def schedule_tasks(
 
     work_start = parse_hhmm(work_start_hhmm)
     work_end = parse_hhmm(work_end_hhmm)
+    # ALWAYS initialize these early (avoid UnboundLocalError due to indentation/branches)
+    events: List[Event] = []
+    unscheduled: List[Dict] = []
 
     # -------------------------
     # Safety filter: remove tasks with invalid deadlines (NaT/None/Timestamp)
