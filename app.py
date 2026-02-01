@@ -498,6 +498,59 @@ def schedule_tasks(
     work_start = parse_hhmm(work_start_hhmm)
     work_end = parse_hhmm(work_end_hhmm)
 
+    # -------------------------
+    # Safety filter: remove tasks with invalid deadlines (NaT/None/Timestamp)
+    # -------------------------
+    cleaned_tasks: List[Task] = []
+    dropped_tasks: List[Dict] = []
+
+    for t in tasks:
+        dl = getattr(t, "deadline", None)
+
+        # None deadline
+        if dl is None:
+            dropped_tasks.append(
+                {"task_id": getattr(t, "task_id", ""), "course": getattr(t, "course", ""), "title": getattr(t, "title", ""), "reason": "דדליין חסר (None)."}
+            )
+            continue
+
+        # pandas NaT / missing timestamps
+        try:
+            if isinstance(dl, (pd.Timestamp, datetime)) and pd.isna(dl):
+                dropped_tasks.append(
+                    {"task_id": getattr(t, "task_id", ""), "course": getattr(t, "course", ""), "title": getattr(t, "title", ""), "reason": "דדליין חסר (NaT)."}
+                )
+                continue
+        except Exception:
+            pass
+
+        # normalize Timestamp/datetime -> date
+        if isinstance(dl, (pd.Timestamp, datetime)):
+            dl = dl.date()
+
+        # ensure it's a pure date object
+        if not isinstance(dl, date) or isinstance(dl, datetime):
+            dropped_tasks.append(
+                {"task_id": getattr(t, "task_id", ""), "course": getattr(t, "course", ""), "title": getattr(t, "title", ""), "reason": f"סוג דדליין לא תקין: {type(getattr(t, 'deadline', None))}"}
+            )
+            continue
+
+        # write back normalized value
+        try:
+            t.deadline = dl
+        except Exception:
+            pass
+
+        cleaned_tasks.append(t)
+
+    tasks = cleaned_tasks
+
+    # עכשיו המיון בטוח
+    tasks_sorted = sorted(
+        tasks,
+        key=lambda t: (t.deadline, -int(clamp_float(t.priority, 1, 5)), -float(t.estimated_hours)),
+    )
+
     weekday_blocks_t: Dict[int, List[Tuple[time, time]]] = {}
     for wd, blocks in (weekday_blocks or {}).items():
         out: List[Tuple[time, time]] = []
@@ -1294,6 +1347,13 @@ if compute_clicked:
 
         workday_start_str = workday_start_t.strftime("%H:%M")
         workday_end_str = workday_end_t.strftime("%H:%M")
+
+        if "deadline" in st.session_state["tasks_df"].columns:
+            n_missing = int(st.session_state["tasks_df"]["deadline"].isna().sum())
+        if n_missing > 0:
+            st.error(f"יש {n_missing} מטלות ללא דדליין. מחק שורות ריקות או מלא תאריך ואז נסה שוב.")
+            st.stop()
+
 
         schedule_params = {
             "tasks": tasks,
