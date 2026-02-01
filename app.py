@@ -1055,7 +1055,7 @@ if compute_clicked:
             "date_blocks": date_blocks,
         
         }
-        st.session_state.schedule_params = schedule_params
+        st.session_state["schedule_params"] = schedule_params
 
         with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
             try:
