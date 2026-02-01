@@ -1368,11 +1368,19 @@ if compute_clicked:
         workday_start_str = workday_start_t.strftime("%H:%M")
         workday_end_str = workday_end_t.strftime("%H:%M")
 
-        if "deadline" in st.session_state["tasks_df"].columns:
-            n_missing = int(st.session_state["tasks_df"]["deadline"].isna().sum())
-        if n_missing > 0:
-            st.error(f"יש {n_missing} מטלות ללא דדליין. מחק שורות ריקות או מלא תאריך ואז נסה שוב.")
-            st.stop()
+def _count_missing_deadlines(df: pd.DataFrame) -> int:
+    if df is None or df.empty or "deadline" not in df.columns:
+        return 0
+    return int(pd.to_datetime(df["deadline"], errors="coerce").isna().sum())
+
+# ... אחרי שהתקבל edited_tasks_df מה-form, ולפני schedule_tasks ...
+
+# חסימה רק אם המשתמש ביקש לחשב (לא במחיקה ולא בשמירה)
+if compute_clicked:
+    missing = _count_missing_deadlines(st.session_state["tasks_df"])
+    if missing > 0:
+        st.error(f"יש {missing} מטלות ללא דדליין. מחק שורות ריקות או מלא תאריך ואז נסה שוב.")
+        st.stop()
 
 
         schedule_params = {
