@@ -1101,19 +1101,23 @@ with tab_reset:
 # ודא שברירת מחדל קיימת לפני הכל
 ensure_session_defaults(year, month)
 
-# התאמת טיפוסי תאריך לפני data_editor (כדי ש-DateColumn לא יקרוס)
+# --- ensure delete column exists ---
+if "_delete" not in st.session_state["tasks_df"].columns:
+    st.session_state["tasks_df"]["_delete"] = False
+
+# DateColumn compatibility (if you use it)
 st.session_state["tasks_df"] = coerce_dates_for_editor(st.session_state["tasks_df"], "deadline")
 
 with st.form("planner_form", clear_on_submit=False):
 
     st.markdown("## הזנת מטלות 📝")
-    st.info("אפשר להזין בטבלה או להדביק טקסט חופשי. השמירה מתבצעת רק בלחיצה על הכפתורים למטה.", icon="💡")
 
     edited_tasks_df = st.data_editor(
         st.session_state["tasks_df"],
         use_container_width=True,
         num_rows="dynamic",
         column_config={
+            "_delete": st.column_config.CheckboxColumn("מחיקה", help="סמן שורות למחיקה"),
             "task_id": st.column_config.TextColumn("מזהה"),
             "course": st.column_config.TextColumn("שם הקורס"),
             "title": st.column_config.TextColumn("שם המטלה"),
@@ -1126,7 +1130,6 @@ with st.form("planner_form", clear_on_submit=False):
     )
 
     st.markdown("### הדבקת מטלות בטקסט חופשי (אופציונלי)")
-    st.caption("דוגמה: קורס | מטלה | 01/02/2026 | 12 | עדיפות 5")
     free_text = st.text_area(
         "הדבק כאן",
         height=120,
@@ -1134,23 +1137,40 @@ with st.form("planner_form", clear_on_submit=False):
         key="free_text_tasks",
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
         save_clicked = st.form_submit_button("💾 שמור נתונים")
-    with col2:
+    with c2:
+        delete_clicked = st.form_submit_button("🗑️ מחק שורות מסומנות")
+    with c3:
         compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
 
-# commit אחרי submit
-if save_clicked or compute_clicked:
+# --- Commit after submit ---
+if save_clicked or delete_clicked or compute_clicked:
     st.session_state["tasks_df"] = edited_tasks_df
 
-    # הוספת מטלות מטקסט חופשי לאחר submit בלבד
-    txt = (st.session_state.get("free_text_tasks") or "").strip()
-    if txt:
-        parsed = try_ai_parse_tasks(txt)
+    # Delete selected rows
+    if delete_clicked:
+        if "_delete" in st.session_state["tasks_df"].columns:
+            before = len(st.session_state["tasks_df"])
+            st.session_state["tasks_df"] = st.session_state["tasks_df"][~st.session_state["tasks_df"]["_delete"].fillna(False)].copy()
+            after = len(st.session_state["tasks_df"])
+            st.success(f"נמחקו {before - after} שורות.")
+
+            # Recreate delete column reset
+            st.session_state["tasks_df"]["_delete"] = False
+
+            # IMPORTANT: reset editor key to avoid 'stuck' behavior
+            st.session_state["tasks_editor_nonce"] = st.session_state.get("tasks_editor_nonce", 0) + 1
+            st.rerun()
+
+    # Add from free text only when saving or computing (not on delete)
+    if (save_clicked or compute_clicked) and (st.session_state.get("free_text_tasks") or "").strip():
+        parsed = try_ai_parse_tasks(st.session_state["free_text_tasks"])
         if parsed:
             add_df = pd.DataFrame(
                 [{
+                    "_delete": False,
                     "task_id": t.task_id,
                     "course": t.course,
                     "title": t.title,
