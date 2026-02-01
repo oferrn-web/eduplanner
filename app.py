@@ -1053,9 +1053,11 @@ if compute_clicked:
             "buffer_hours": int(buffer_hours),
             "weekday_blocks": weekday_blocks,
             "date_blocks": date_blocks,
-        
         }
-        st.session_state["schedule_params"] = schedule_params
+
+        # DEBUG חייב להיות כאן, כי כאן schedule_params קיים
+        st.write("DEBUG schedule_params keys:", list(schedule_params.keys()))
+        st.write("DEBUG tasks count:", len(schedule_params["tasks"]))
 
         with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
             try:
@@ -1064,31 +1066,8 @@ if compute_clicked:
                 st.session_state.report = report
                 st.success(f"הלו״ז הושלם בהצלחה. נוצרו {len(events)} משבצות עבודה.")
             except Exception as e:
-                st.error("אירעה שגיאה במהלך חישוב הלו״ז.")
+                st.error("שגיאה בקריאה ל-schedule_tasks. פירוט מלא:")
                 st.exception(e)
-
-with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
-    try:
-        st.write("DEBUG schedule_params keys:", list(schedule_params.keys()))
-        st.write("DEBUG tz_name:", schedule_params["tz_name"])
-        st.write("DEBUG year, month:", schedule_params["year"], schedule_params["month"])
-        st.write("DEBUG work hours:", schedule_params["work_start_hhmm"], schedule_params["work_end_hhmm"])
-        st.write("DEBUG daily_max_hours:", schedule_params["daily_max_hours"])
-        st.write("DEBUG max_task_hours_per_day:", schedule_params["max_task_hours_per_day"])
-        st.write("DEBUG slot_minutes:", schedule_params["slot_minutes"])
-        st.write("DEBUG buffer_hours:", schedule_params["buffer_hours"])
-        st.write("DEBUG tasks count:", len(schedule_params["tasks"]))
-        st.write("DEBUG weekday_blocks type:", type(schedule_params["weekday_blocks"]).__name__)
-        st.write("DEBUG date_blocks type:", type(schedule_params["date_blocks"]).__name__)
-
-        events, report = schedule_tasks(**schedule_params)
-
-        st.session_state.events = events
-        st.session_state.report = report
-        st.success(f"הלו״ז הושלם בהצלחה. נוצרו {len(events)} משבצות עבודה.")
-    except Exception as e:
-        st.error("שגיאה בקריאה ל-schedule_tasks. פירוט מלא:")
-        st.exception(e)
 
 # =========================
 # Display schedule + export
