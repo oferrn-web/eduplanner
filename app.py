@@ -266,6 +266,50 @@ UI = {
 # =========================
 # Utilities
 # =========================
+def coerce_dates_for_editor(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """
+    Makes df[col] compatible with st.column_config.DateColumn by coercing to datetime64[ns].
+    Supports YYYY-MM-DD and DD/MM/YYYY strings, plus existing datetime/date objects.
+    """
+    if df is None or df.empty or col not in df.columns:
+        return df
+
+    s = df[col]
+
+    # Already datetime dtype
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return df
+
+    def _parse_one(x):
+        if x is None:
+            return pd.NaT
+        try:
+            if pd.isna(x):
+                return pd.NaT
+        except Exception:
+            pass
+
+        if isinstance(x, (pd.Timestamp, datetime)):
+            return pd.Timestamp(x)
+        if isinstance(x, date):
+            return pd.Timestamp(datetime.combine(x, time(0, 0)))
+
+        txt = str(x).strip()
+        if not txt:
+            return pd.NaT
+
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return pd.Timestamp(datetime.strptime(txt, fmt))
+            except Exception:
+                continue
+
+        return pd.NaT
+
+    df = df.copy()
+    df[col] = s.apply(_parse_one)
+    return df
+
 def parse_hhmm(s: str) -> time:
     s = (s or "").strip()
     if not re.match(r"^\d{2}:\d{2}$", s):
@@ -1001,81 +1045,98 @@ with tab_reset:
 # -------------------------
 # Main: Task input
 # -------------------------
+# ודא שברירת מחדל קיימת לפני הכל
+ensure_session_defaults(year, month)
+
+# התאמת טיפוסי תאריך לפני data_editor (כדי ש-DateColumn לא יקרוס)
+st.session_state["tasks_df"] = coerce_dates_for_editor(st.session_state["tasks_df"], "deadline")
+
 with st.form("planner_form", clear_on_submit=False):
 
     st.markdown("## הזנת מטלות 📝")
-
-    st.info(
-        "ניתן להזין מטלות ידנית בטבלה, או להדביק טקסט חופשי בפורמט חופשי.",
-        icon="💡",
-    )
+    st.info("אפשר להזין בטבלה או להדביק טקסט חופשי. השמירה מתבצעת רק בלחיצה על הכפתורים למטה.", icon="💡")
 
     edited_tasks_df = st.data_editor(
         st.session_state["tasks_df"],
         use_container_width=True,
         num_rows="dynamic",
-        key="tasks_editor_main",
         column_config={
             "task_id": st.column_config.TextColumn("מזהה"),
             "course": st.column_config.TextColumn("שם הקורס"),
             "title": st.column_config.TextColumn("שם המטלה"),
             "deadline": st.column_config.DateColumn("דדליין", format="DD/MM/YYYY"),
-            "estimated_hours": st.column_config.NumberColumn("שעות משוערות"),
-            "priority": st.column_config.NumberColumn("עדיפות (1–5)"),
+            "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
+            "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
             "notes": st.column_config.TextColumn("הערות"),
         },
+        key="w_tasks_editor_main",
     )
 
-    st.markdown("### הדבקת מטלות בטקסט חופשי")
-
+    st.markdown("### הדבקת מטלות בטקסט חופשי (אופציונלי)")
+    st.caption("דוגמה: קורס | מטלה | 01/02/2026 | 12 | עדיפות 5")
     free_text = st.text_area(
         "הדבק כאן",
-        placeholder="לדוגמה:\nביולוגיה | עבודה סמינריונית | 01/02/2026 | 12 | עדיפות 5",
         height=120,
+        placeholder="לדוגמה:\nביולוגיה | עבודה סמינריונית | 01/02/2026 | 12 | עדיפות 5",
+        key="free_text_tasks",
     )
 
     col1, col2 = st.columns(2)
-
     with col1:
         save_clicked = st.form_submit_button("💾 שמור נתונים")
-
     with col2:
         compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
 
-# מחוץ ל-form: commit ל-session_state
+# commit אחרי submit
 if save_clicked or compute_clicked:
     st.session_state["tasks_df"] = edited_tasks_df
 
-    if free_text.strip():
-        parsed = try_ai_parse_tasks(free_text)
+    # הוספת מטלות מטקסט חופשי לאחר submit בלבד
+    txt = (st.session_state.get("free_text_tasks") or "").strip()
+    if txt:
+        parsed = try_ai_parse_tasks(txt)
         if parsed:
             add_df = pd.DataFrame(
-                [
-                    {
-                        "task_id": t.task_id,
-                        "course": t.course,
-                        "title": t.title,
-                        "deadline": t.deadline,
-                        "estimated_hours": t.estimated_hours,
-                        "priority": t.priority,
-                        "notes": t.notes,
-                    }
-                    for t in parsed
-                ]
+                [{
+                    "task_id": t.task_id,
+                    "course": t.course,
+                    "title": t.title,
+                    "deadline": pd.Timestamp(datetime.combine(t.deadline, time(0, 0))),
+                    "estimated_hours": float(t.estimated_hours),
+                    "priority": int(t.priority),
+                    "notes": t.notes,
+                } for t in parsed]
             )
-            st.session_state["tasks_df"] = pd.concat(
-                [st.session_state["tasks_df"], add_df],
-                ignore_index=True,
-            )
-
+            st.session_state["tasks_df"] = pd.concat([st.session_state["tasks_df"], add_df], ignore_index=True)
+            st.success(f"נוספו {len(parsed)} מטלות מהטקסט.")
+        else:
+            st.warning("לא הצלחתי לחלץ מטלות מהטקסט. נסה פורמט כמו בדוגמה.")
+            
 def parse_date_any(s: str) -> date:
-    s = (s or "").strip()
+    """
+    Parses date in either ISO or EU format.
+
+    Supported:
+      - YYYY-MM-DD
+      - DD/MM/YYYY
+
+    Returns: datetime.date
+    Raises: ValueError if cannot parse.
+    """
+    if s is None:
+        raise ValueError("empty date")
+
+    s = str(s).strip()
+    if not s:
+        raise ValueError("empty date string")
+
     for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
         try:
             return datetime.strptime(s, fmt).date()
         except Exception:
-            pass
-    raise ValueError("Bad date format. Expected YYYY-MM-DD or DD/MM/YYYY.")
+            continue
+
+    raise ValueError(f"Unsupported date format: {s}")
 
 # -------------------------
 # Convert UI tables to model inputs
