@@ -690,6 +690,37 @@ def to_ics(events: List[Event], tz_name: str, cal_name: str = "EduPlanner") -> s
 # =========================
 # Optional: AI Helpers (Safe Stubs)
 # =========================
+def coerce_date_series_to_datetime(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    if col not in df.columns:
+        return df
+    s = df[col]
+
+    # אם כבר datetime, לא נוגעים
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return df
+
+    # אם אובייקטים של date, ננסה להמיר
+    try:
+        df[col] = pd.to_datetime(s, errors="coerce")
+        return df
+    except Exception:
+        pass
+
+    # אם מחרוזות, ננסה שני פורמטים בצורה דטרמיניסטית
+    def _parse(x):
+        if x is None or str(x).strip() == "":
+            return pd.NaT
+        x = str(x).strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(x, fmt)
+            except Exception:
+                continue
+        return pd.NaT
+
+    df[col] = s.apply(_parse)
+    return df
+
 def try_ai_parse_tasks(free_text: str) -> List[Task]:
     """
     Optional: parse tasks from free text.
@@ -899,7 +930,18 @@ with tab_reset:
 # Main: Task input
 # -------------------------
 with st.form("planner_inputs", clear_on_submit=False):
+
     st.markdown("## הזנת מטלות 📝")
+
+    # הבטחת עמודות
+    TASK_COLS = ["task_id", "course", "title", "deadline", "estimated_hours", "priority", "notes"]
+    for c in TASK_COLS:
+        if c not in st.session_state.tasks_df.columns:
+            st.session_state.tasks_df[c] = "" if c != "estimated_hours" else 0.0
+    st.session_state.tasks_df = st.session_state.tasks_df[TASK_COLS].copy()
+
+    # המרה ל-datetime כדי ש-DateColumn יעבוד
+    st.session_state.tasks_df = coerce_date_series_to_datetime(st.session_state.tasks_df, "deadline")
 
     edited_tasks_df = st.data_editor(
         st.session_state.tasks_df,
@@ -917,8 +959,11 @@ with st.form("planner_inputs", clear_on_submit=False):
         key="w_tasks_editor_main",
     )
 
+    st.divider()
     st.markdown("## הגדרת חסמים ⛔")
 
+    # חסמים שבועיים
+    st.session_state.weekday_blocks_df = st.session_state.weekday_blocks_df.copy()
     edited_wd_df = st.data_editor(
         st.session_state.weekday_blocks_df,
         use_container_width=True,
@@ -931,6 +976,10 @@ with st.form("planner_inputs", clear_on_submit=False):
         },
         key="weekday_blocks_editor",
     )
+
+    # חסמים בתאריכים (כאן חובה datetime כדי ש-DateColumn יעבוד)
+    st.session_state.date_blocks_df = st.session_state.date_blocks_df.copy()
+    st.session_state.date_blocks_df = coerce_date_series_to_datetime(st.session_state.date_blocks_df, "date")
 
     edited_date_df = st.data_editor(
         st.session_state.date_blocks_df,
@@ -951,6 +1000,7 @@ with st.form("planner_inputs", clear_on_submit=False):
     with col2:
         compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
 
+# מחוץ ל-form: commit ל-session_state
 if save_clicked or compute_clicked:
     st.session_state.tasks_df = edited_tasks_df
     st.session_state.weekday_blocks_df = edited_wd_df
@@ -968,56 +1018,122 @@ def parse_date_any(s: str) -> date:
 # -------------------------
 # Convert UI tables to model inputs
 # -------------------------
+def _coerce_date_value_to_date(val) -> date:
+    """
+    Accepts: date, datetime, pd.Timestamp, or string in YYYY-MM-DD / DD/MM/YYYY.
+    Returns: date
+    Raises: Exception if cannot parse.
+    """
+    if val is None:
+        raise ValueError("empty date")
+
+    # pandas may store missing as NaT (which behaves like NaN)
+    try:
+        if pd.isna(val):
+            raise ValueError("missing date")
+    except Exception:
+        pass
+
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return val.date()
+
+    s = str(val).strip()
+    if not s:
+        raise ValueError("empty date string")
+
+    return parse_date_any(s)
+
+
 def df_to_tasks(df: pd.DataFrame) -> List[Task]:
-    tasks = []
-    for i, row in df.fillna("").iterrows():
+    tasks: List[Task] = []
+    if df is None or df.empty:
+        return tasks
+
+    for i, row in df.iterrows():
         task_id = str(row.get("task_id") or f"T{i+1}").strip() or f"T{i+1}"
         course = str(row.get("course") or "").strip()
         title = str(row.get("title") or "").strip()
-        dl_raw = str(row.get("deadline") or "").strip()
 
         if not title and not course:
             continue
 
+        dl_val = row.get("deadline")
         try:
-            dl = parse_date_any(dl_raw)
+            dl = _coerce_date_value_to_date(dl_val)
         except Exception:
+            # דדליין לא תקין, לא נכניס מטלה
             continue
-
 
         est = safe_float(row.get("estimated_hours"), 0.0)
         pr = safe_int(row.get("priority"), 3)
         pr = int(clamp_float(pr, 1, 5))
         notes = str(row.get("notes") or "").strip()
 
-        tasks.append(Task(task_id=task_id, course=course, title=title, deadline=dl, estimated_hours=est, priority=pr, notes=notes))
+        tasks.append(
+            Task(
+                task_id=task_id,
+                course=course,
+                title=title,
+                deadline=dl,
+                estimated_hours=est,
+                priority=pr,
+                notes=notes,
+            )
+        )
+
     return tasks
 
 
 def df_to_weekday_blocks(df: pd.DataFrame) -> Dict[int, List[Tuple[str, str]]]:
     out: Dict[int, List[Tuple[str, str]]] = {}
-    for _, row in df.fillna("").iterrows():
+    if df is None or df.empty:
+        return out
+
+    for _, row in df.iterrows():
         wd_name = str(row.get("weekday") or "").strip()
         if wd_name not in WEEKDAY_NAME_TO_INT:
             continue
+
         wd = WEEKDAY_NAME_TO_INT[wd_name]
         s = str(row.get("start") or "").strip()
         e = str(row.get("end") or "").strip()
+
         if not s or not e:
             continue
+
         out.setdefault(wd, []).append((s, e))
+
     return out
 
 
 def df_to_date_blocks(df: pd.DataFrame) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Returns dict keyed by ISO date string 'YYYY-MM-DD', to remain compatible
+    with schedule_tasks which currently parses ds via datetime.strptime(ds, "%Y-%m-%d").
+    """
     out: Dict[str, List[Tuple[str, str]]] = {}
-    for _, row in df.fillna("").iterrows():
-        ds = str(row.get("date") or "").strip()
+    if df is None or df.empty:
+        return out
+
+    for _, row in df.iterrows():
+        ds_val = row.get("date")
         s = str(row.get("start") or "").strip()
         e = str(row.get("end") or "").strip()
-        if not ds or not s or not e:
+
+        if not s or not e:
             continue
+
+        try:
+            d = _coerce_date_value_to_date(ds_val)
+        except Exception:
+            continue
+
+        ds = d.strftime("%Y-%m-%d")
         out.setdefault(ds, []).append((s, e))
+
     return out
 
 
