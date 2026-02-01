@@ -719,6 +719,39 @@ def try_ai_parse_tasks(free_text: str) -> List[Task]:
 # UI
 # =========================
 st.set_page_config(page_title="EduPlanner", page_icon="🎓", layout="wide")
+st.markdown(
+    """
+    <style>
+    /* Data Editor container */
+    [data-testid="stDataEditor"], 
+    [data-testid="stDataEditor"] * {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+
+    /* Header cells */
+    [data-testid="stDataEditor"] [role="columnheader"] {
+        direction: rtl !important;
+        text-align: right !important;
+        unicode-bidi: plaintext;
+    }
+
+    /* Cell content */
+    [data-testid="stDataEditor"] [role="gridcell"] {
+        direction: rtl !important;
+        text-align: right !important;
+        unicode-bidi: plaintext;
+    }
+
+    /* Keep code blocks and JSON LTR */
+    pre, code, .stCodeBlock, [data-testid="stCodeBlock"] {
+        direction: ltr !important;
+        text-align: left !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # Minimal styling to keep your dark, clean feel
 st.markdown(
@@ -743,34 +776,113 @@ st.caption("הזנת מטלות, חישוב לו״ז חודשי דטרמיניס
 # -------------------------
 st.sidebar.header("הגדרות מערכת ⚙️")
 
-tz_name = st.sidebar.text_input("אזור זמן (TZID)", value=DEFAULT_TZ)
+# טאבים בסיידבר, יותר יציב מאשר רשימה ארוכה
+tab_basic, tab_rules, tab_reset = st.sidebar.tabs(["בסיסי", "שיבוץ", "איפוס"])
 
-year = st.sidebar.selectbox("בחר שנת לימודים", options=list(range(2024, 2031)), index=list(range(2024, 2031)).index(2026) if 2026 in range(2024, 2031) else 0)
-month = st.sidebar.selectbox("בחר חודש לתכנון", options=list(range(1, 13)), index=datetime.now().month - 1)
+with tab_basic:
+    tz_name = st.text_input("אזור זמן (TZID)", value=DEFAULT_TZ)
 
-st.sidebar.subheader("תכנון זמן יומי")
-daily_max_hours = st.sidebar.slider("כמה שעות מקסימליות ביום?", min_value=1.0, max_value=12.0, value=float(DEFAULT_DAILY_MAX_HOURS), step=0.5)
-workday_start = st.sidebar.text_input("מתי להתחיל את היום? (HH:MM)", value=DEFAULT_WORKDAY_START)
-workday_end = st.sidebar.text_input("מתי לסיים את היום? (HH:MM)", value=DEFAULT_WORKDAY_END)
+    year = st.selectbox("בחר שנת לימודים", options=list(range(2024, 2031)), index=list(range(2024, 2031)).index(2026) if 2026 in range(2024, 2031) else 0)
+    month = st.selectbox("בחר חודש לתכנון", options=list(range(1, 13)), index=datetime.now().month - 1)
 
-st.sidebar.subheader("כללי שיבוץ")
-max_task_hours_per_day = st.sidebar.slider("מקסימום שעות לאותה מטלה ביום", min_value=1.0, max_value=6.0, value=float(DEFAULT_MAX_TASK_HOURS_PER_DAY), step=0.5)
-slot_minutes = st.sidebar.select_slider("גודל משבצת (דקות)", options=[30, 45, 60, 90, 120], value=DEFAULT_SLOT_MINUTES)
-buffer_hours = st.sidebar.select_slider("מרווח ביטחון לפני דדליין (שעות)", options=[24, 36, 48, 72], value=DEFAULT_BUFFER_HOURS)
+    st.subheader("תכנון זמן יומי")
+    c1, c2 = st.columns(2)
 
-st.sidebar.divider()
-if st.sidebar.button("🧹 ניקוי כל הנתונים"):
-    for k in ["tasks_df", "weekday_blocks_df", "date_blocks_df", "events", "report"]:
-        if k in st.session_state:
-            del st.session_state[k]
-    st.rerun()
+    with c1:
+        daily_max_hours = st.number_input(
+            "כמה שעות מקסימליות ביום?",
+            min_value=1.0,
+            max_value=12.0,
+            value=float(DEFAULT_DAILY_MAX_HOURS),
+            step=0.5
+        )
+
+        # time_input מחזיר datetime.time, זה חוסך שגיאות HH:MM
+        workday_start_t = st.time_input("מתי להתחיל את היום?", value=parse_hhmm(DEFAULT_WORKDAY_START))
+
+    with c2:
+        max_task_hours_per_day = st.number_input(
+            "מקסימום שעות לאותה מטלה ביום",
+            min_value=1.0,
+            max_value=6.0,
+            value=float(DEFAULT_MAX_TASK_HOURS_PER_DAY),
+            step=0.5
+        )
+        workday_end_t = st.time_input("מתי לסיים את היום?", value=parse_hhmm(DEFAULT_WORKDAY_END))
+
+    # המרה חזרה ל־HH:MM עבור מנוע השיבוץ
+    workday_start = workday_start_t.strftime("%H:%M")
+    workday_end = workday_end_t.strftime("%H:%M")
+
+with tab_rules:
+    st.subheader("רזולוציית שיבוץ ומרווח ביטחון")
+
+    r1, r2 = st.columns(2)
+    with r1:
+        slot_minutes = st.select_slider("גודל משבצת (דקות)", options=[30, 45, 60, 90, 120], value=DEFAULT_SLOT_MINUTES)
+    with r2:
+        buffer_hours = st.select_slider("מרווח ביטחון לפני דדליין (שעות)", options=[24, 36, 48, 72], value=DEFAULT_BUFFER_HOURS)
+
+    st.caption("המלצה פרקטית: משבצת 60 דקות + Buffer של 48 שעות היא ברירת מחדל טובה לרוב הסטודנטים.")
+
+with tab_reset:
+    st.subheader("ניקוי נתונים")
+    if st.button("🧹 ניקוי כל הנתונים", type="secondary"):
+        for k in ["tasks_df", "weekday_blocks_df", "date_blocks_df", "events", "report"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.rerun()
+
+    # אופציה אגרסיבית, אם אתה רוצה למחוק הכל כולל כל מפתח פנימי
+    if st.button("🧨 ניקוי מוחלט (כולל הכל)", type="secondary"):
+        st.session_state.clear()
+        st.rerun()
 
 
 # -------------------------
 # Main: Task input
 # -------------------------
 st.markdown("## הזנת מטלות 📝")
-st.info("מומלץ להזין מטלות בצורה מובנית. ניתן גם להדביק טקסט חופשי, ואז לבצע חילוץ בסיסי.", icon="💡")
+st.info("מומלץ להזין מטלות בצורה מובנית. ניתן גם להדביק טקסט חופשי, ואז לבצע חילוץ.", icon="💡")
+
+TASK_COLS = ["task_id", "course", "title", "deadline", "estimated_hours", "priority", "notes"]
+
+if "tasks_df" not in st.session_state:
+    st.session_state.tasks_df = pd.DataFrame(
+        [
+            {"task_id": "T1", "course": "קורס לדוגמה", "title": "עבודה מסכמת", "deadline": f"{year:04d}-{month:02d}-20", "estimated_hours": 6.0, "priority": 4, "notes": ""},
+            {"task_id": "T2", "course": "קורס לדוגמה", "title": "קריאת מאמר", "deadline": f"{year:04d}-{month:02d}-12", "estimated_hours": 3.0, "priority": 3, "notes": ""},
+        ],
+        columns=TASK_COLS
+    )
+else:
+    # שמירה על סדר עמודות גם אם משהו השתנה
+    for c in TASK_COLS:
+        if c not in st.session_state.tasks_df.columns:
+            st.session_state.tasks_df[c] = ""
+    st.session_state.tasks_df = st.session_state.tasks_df[TASK_COLS]
+
+edited_tasks_df = st.data_editor(
+    st.session_state.tasks_df,
+    use_container_width=True,
+    num_rows="dynamic",
+    column_config={
+        "task_id": st.column_config.TextColumn("מזהה", help="מזהה פנימי קצר, למשל T1"),
+        "course": st.column_config.TextColumn("שם הקורס"),
+        "title": st.column_config.TextColumn("שם המטלה"),
+        "deadline": st.column_config.TextColumn("דדליין (YYYY-MM-DD)", help="לדוגמה: 2026-03-10"),
+        "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
+        "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
+        "notes": st.column_config.TextColumn("הערות"),
+    },
+    key="tasks_editor",
+)
+
+# חשוב: לאכוף שוב סדר עמודות אחרי עריכה
+for c in TASK_COLS:
+    if c not in edited_tasks_df.columns:
+        edited_tasks_df[c] = ""
+st.session_state.tasks_df = edited_tasks_df[TASK_COLS]
 
 # Default tasks table
 if "tasks_df" not in st.session_state:
@@ -950,27 +1062,33 @@ if compute_clicked:
         weekday_blocks = df_to_weekday_blocks(st.session_state.weekday_blocks_df)
         date_blocks = df_to_date_blocks(st.session_state.date_blocks_df)
 
-        with st.spinner("המערכת בונה לו״ז בצורה דטרמיניסטית, תוך כיבוד אילוצים ועומסים..."):
-            try:
-                events, report = schedule_tasks(
-                    tasks=tasks,
-                    tz_name=tz_name.strip() or DEFAULT_TZ,
-                    year=int(year),
-                    month=int(month),
-                    work_start_hhmm=workday_start.strip() or DEFAULT_WORKDAY_START,
-                    work_end_hhmm=workday_end.strip() or DEFAULT_WORKDAY_END,
-                    daily_max_hours=float(daily_max_hours),
-                    max_task_hours_per_day=float(max_task_hours_per_day),
-                    slot_minutes=int(slot_minutes),
-                    buffer_hours=int(buffer_hours),
-                    weekday_blocks=weekday_blocks,
-                    date_blocks=date_blocks,
-                )
-                st.session_state.events = events
-                st.session_state.report = report
-                st.success(f"הלו״ז מוכן. נוצרו {len(events)} משבצות עבודה.")
-            except Exception as e:
-                st.error(f"שגיאה בחישוב: {e}")
+        workday_start_str = workday_start_t.strftime("%H:%M")
+workday_end_str = workday_end_t.strftime("%H:%M")
+
+schedule_params = {
+    "tasks": tasks,
+    "tz_name": tz_name.strip() or DEFAULT_TZ,
+    "year": int(year),
+    "month": int(month),
+    "work_start_hhmm": workday_start_str,
+    "work_end_hhmm": workday_end_str,
+    "daily_max_hours": float(daily_max_hours),
+    "max_task_hours_per_day": float(max_task_hours_per_day),
+    "slot_minutes": int(slot_minutes),
+    "buffer_hours": int(buffer_hours),
+    "weekday_blocks": weekday_blocks,
+    "date_blocks": date_blocks,
+}
+
+with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
+    try:
+        events, report = schedule_tasks(**schedule_params)
+        st.session_state.events = events
+        st.session_state.report = report
+        st.success(f"הלו״ז הושלם בהצלחה. נוצרו {len(events)} משבצות עבודה.")
+    except Exception as e:
+        st.error("אירעה שגיאה במהלך חישוב הלו״ז.")
+        st.exception(e)
 
 # =========================
 # Display schedule + export
