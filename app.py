@@ -1135,18 +1135,56 @@ with tab_reset:
         st.rerun()
 
 
-# -------------------------
-# Main: Task input
-# -------------------------
-# ודא שברירת מחדל קיימת לפני הכל
-ensure_session_defaults(year, month)
+# =========================
+# Inputs Form: Tasks + Constraints + Actions
+# =========================
 
-# --- ensure delete column exists ---
+# ודא nonce קיים כדי שנוכל לאפס editor אחרי מחיקה (מונע תקיעות)
+if "tasks_editor_nonce" not in st.session_state:
+    st.session_state["tasks_editor_nonce"] = 0
+
+# ודא עמודת מחיקה קיימת
 if "_delete" not in st.session_state["tasks_df"].columns:
     st.session_state["tasks_df"]["_delete"] = False
 
-# DateColumn compatibility (if you use it)
+# התאמת טיפוסי תאריך לפני DateColumn (כדי שלא יקרוס)
 st.session_state["tasks_df"] = coerce_dates_for_editor(st.session_state["tasks_df"], "deadline")
+st.session_state["date_blocks_df"] = coerce_dates_for_editor(st.session_state["date_blocks_df"], "date")
+
+def delete_selected_and_empty_rows(tasks_df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int]:
+    """
+    Deletes rows that are either:
+    1) Marked for deletion via _delete == True
+    2) Empty rows: course+title empty AND deadline missing/NaT
+    """
+    if tasks_df is None or tasks_df.empty:
+        return tasks_df, 0, 0
+
+    df = tasks_df.copy()
+
+    if "_delete" not in df.columns:
+        df["_delete"] = False
+    for col in ["course", "title", "deadline"]:
+        if col not in df.columns:
+            df[col] = None
+
+    dl = pd.to_datetime(df["deadline"], errors="coerce")
+
+    marked_mask = df["_delete"].fillna(False).astype(bool)
+    empty_mask = (
+        df["course"].fillna("").astype(str).str.strip().eq("")
+        & df["title"].fillna("").astype(str).str.strip().eq("")
+        & dl.isna()
+    )
+
+    deleted_marked = int(marked_mask.sum())
+    deleted_empty = int(empty_mask.sum())
+
+    df = df[~(marked_mask | empty_mask)].copy()
+    df["_delete"] = False
+
+    return df, deleted_marked, deleted_empty
+
 
 with st.form("planner_form", clear_on_submit=False):
 
@@ -1166,7 +1204,7 @@ with st.form("planner_form", clear_on_submit=False):
             "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
             "notes": st.column_config.TextColumn("הערות"),
         },
-        key="w_tasks_editor_main",
+        key=f"w_tasks_editor_main_{st.session_state['tasks_editor_nonce']}",
     )
 
     st.markdown("### הדבקת מטלות בטקסט חופשי (אופציונלי)")
@@ -1177,54 +1215,91 @@ with st.form("planner_form", clear_on_submit=False):
         key="free_text_tasks",
     )
 
+    st.divider()
+    st.markdown("## הגדרת חסמים ⛔")
+
+    st.markdown("### חסמים שבועיים קבועים")
+    edited_wd_df = st.data_editor(
+        st.session_state["weekday_blocks_df"],
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "weekday": st.column_config.SelectboxColumn("יום", options=WEEKDAYS_HE),
+            "start": st.column_config.TextColumn("התחלה (HH:MM)"),
+            "end": st.column_config.TextColumn("סיום (HH:MM)"),
+            "label": st.column_config.TextColumn("תיאור"),
+        },
+        key="weekday_blocks_editor",
+    )
+
+    st.markdown("### חסמים בתאריכים ספציפיים")
+    edited_date_df = st.data_editor(
+        st.session_state["date_blocks_df"],
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "date": st.column_config.DateColumn("תאריך", format="DD/MM/YYYY"),
+            "start": st.column_config.TextColumn("התחלה (HH:MM)"),
+            "end": st.column_config.TextColumn("סיום (HH:MM)"),
+            "label": st.column_config.TextColumn("תיאור"),
+        },
+        key="date_blocks_editor",
+    )
+
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         save_clicked = st.form_submit_button("💾 שמור נתונים")
     with c2:
-        delete_clicked = st.form_submit_button("🗑️ מחק שורות מסומנות")
+        delete_clicked = st.form_submit_button("🗑️ מחק מסומנים/ריקים")
     with c3:
         compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
 
-# --- Commit after submit ---
+
+# =========================
+# After form: Commit actions
+# =========================
 if save_clicked or delete_clicked or compute_clicked:
     st.session_state["tasks_df"] = edited_tasks_df
+    st.session_state["weekday_blocks_df"] = edited_wd_df
+    st.session_state["date_blocks_df"] = edited_date_df
 
-    # Delete selected rows
-    if delete_clicked:
-        if "_delete" in st.session_state["tasks_df"].columns:
-            before = len(st.session_state["tasks_df"])
-            st.session_state["tasks_df"] = st.session_state["tasks_df"][~st.session_state["tasks_df"]["_delete"].fillna(False)].copy()
-            after = len(st.session_state["tasks_df"])
-            st.success(f"נמחקו {before - after} שורות.")
+# מחיקה אמיתית + מניעת תקיעות
+if delete_clicked:
+    before = len(st.session_state["tasks_df"])
+    new_df, deleted_marked, deleted_empty = delete_selected_and_empty_rows(st.session_state["tasks_df"])
+    after = len(new_df)
 
-            # Recreate delete column reset
-            st.session_state["tasks_df"]["_delete"] = False
+    st.session_state["tasks_df"] = new_df
+    st.success(
+        f"נמחקו {deleted_marked} שורות שסומנו למחיקה, ועוד {deleted_empty} שורות ריקות/ללא דדליין. "
+        f"(סה״כ {before - after} שורות)."
+    )
 
-            # IMPORTANT: reset editor key to avoid 'stuck' behavior
-            st.session_state["tasks_editor_nonce"] = st.session_state.get("tasks_editor_nonce", 0) + 1
-            st.rerun()
+    # איפוס העורך כדי שלא ייתקע
+    st.session_state["tasks_editor_nonce"] += 1
+    st.rerun()
 
-    # Add from free text only when saving or computing (not on delete)
-    if (save_clicked or compute_clicked) and (st.session_state.get("free_text_tasks") or "").strip():
-        parsed = try_ai_parse_tasks(st.session_state["free_text_tasks"])
-        if parsed:
-            add_df = pd.DataFrame(
-                [{
-                    "_delete": False,
-                    "task_id": t.task_id,
-                    "course": t.course,
-                    "title": t.title,
-                    "deadline": pd.Timestamp(datetime.combine(t.deadline, time(0, 0))),
-                    "estimated_hours": float(t.estimated_hours),
-                    "priority": int(t.priority),
-                    "notes": t.notes,
-                } for t in parsed]
-            )
-            st.session_state["tasks_df"] = pd.concat([st.session_state["tasks_df"], add_df], ignore_index=True)
-            st.success(f"נוספו {len(parsed)} מטלות מהטקסט.")
-        else:
-            st.warning("לא הצלחתי לחלץ מטלות מהטקסט. נסה פורמט כמו בדוגמה.")
-                
+# הוספת מטלות מהטקסט החופשי (רק בשמירה/חישוב)
+if (save_clicked or compute_clicked) and (st.session_state.get("free_text_tasks") or "").strip():
+    parsed = try_ai_parse_tasks(st.session_state["free_text_tasks"])
+    if parsed:
+        add_df = pd.DataFrame(
+            [{
+                "_delete": False,
+                "task_id": t.task_id,
+                "course": t.course,
+                "title": t.title,
+                "deadline": pd.Timestamp(datetime.combine(t.deadline, time(0, 0))),
+                "estimated_hours": float(t.estimated_hours),
+                "priority": int(t.priority),
+                "notes": t.notes,
+            } for t in parsed]
+        )
+        st.session_state["tasks_df"] = pd.concat([st.session_state["tasks_df"], add_df], ignore_index=True)
+        st.success(f"נוספו {len(parsed)} מטלות מהטקסט.")
+    else:
+        st.warning("לא הצלחתי לחלץ מטלות מהטקסט. נסה פורמט כמו בדוגמה.")
+
 def parse_date_any(s: str) -> date:
     """
     Parses date in either ISO or EU format.
