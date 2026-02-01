@@ -1111,7 +1111,7 @@ if save_clicked or compute_clicked:
             st.success(f"נוספו {len(parsed)} מטלות מהטקסט.")
         else:
             st.warning("לא הצלחתי לחלץ מטלות מהטקסט. נסה פורמט כמו בדוגמה.")
-            
+                
 def parse_date_any(s: str) -> date:
     """
     Parses date in either ISO or EU format.
@@ -1144,8 +1144,8 @@ def parse_date_any(s: str) -> date:
 def _coerce_date_value_to_date(val) -> date:
     """
     Accepts: date, datetime, pd.Timestamp, or string in YYYY-MM-DD / DD/MM/YYYY.
-    Returns: date
-    Raises: Exception if cannot parse.
+    Returns: datetime.date
+    Raises: ValueError if cannot parse.
     """
     if val is None:
         raise ValueError("empty date")
@@ -1153,16 +1153,25 @@ def _coerce_date_value_to_date(val) -> date:
     # pandas may store missing as NaT (which behaves like NaN)
     try:
         if pd.isna(val):
-            raise ValueError("missing date")
+            raise ValueError("missing/NaT date")
     except Exception:
         pass
 
+    # If it's already a date (but not datetime)
     if isinstance(val, date) and not isinstance(val, datetime):
         return val
 
+    # If it's a datetime-like
     if isinstance(val, (datetime, pd.Timestamp)):
+        # guard again for NaT just in case
+        try:
+            if pd.isna(val):
+                raise ValueError("missing/NaT datetime")
+        except Exception:
+            pass
         return val.date()
 
+    # Otherwise treat as string
     s = str(val).strip()
     if not s:
         raise ValueError("empty date string")
@@ -1180,14 +1189,16 @@ def df_to_tasks(df: pd.DataFrame) -> List[Task]:
         course = str(row.get("course") or "").strip()
         title = str(row.get("title") or "").strip()
 
+        # skip empty rows
         if not title and not course:
             continue
 
+        # deadline: must be valid
         dl_val = row.get("deadline")
         try:
             dl = _coerce_date_value_to_date(dl_val)
         except Exception:
-            # דדליין לא תקין, לא נכניס מטלה
+            # deadline missing/invalid -> skip task
             continue
 
         est = safe_float(row.get("estimated_hours"), 0.0)
@@ -1208,7 +1219,6 @@ def df_to_tasks(df: pd.DataFrame) -> List[Task]:
         )
 
     return tasks
-
 
 def df_to_weekday_blocks(df: pd.DataFrame) -> Dict[int, List[Tuple[str, str]]]:
     out: Dict[int, List[Tuple[str, str]]] = {}
