@@ -53,6 +53,12 @@ except:
     st.stop()
 
 # =========================
+# RTL Settings
+# =========================
+st.set_page_config(page_title="מתכנן המטלות האקדמי", layout="wide")
+st.markdown("<style> .stApp { direction: RTL; text-align: right; } </style>", unsafe_allow_html=True)
+
+# =========================
 # Utilities
 # =========================
 def parse_hhmm(s: str) -> time:
