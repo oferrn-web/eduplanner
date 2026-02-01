@@ -37,6 +37,50 @@ DEFAULT_MAX_TASK_HOURS_PER_DAY = 3.0
 DEFAULT_SLOT_MINUTES = 60
 DEFAULT_BUFFER_HOURS = 48
 
+# ===== constants =====
+TASK_COLS = ["task_id", "course", "title", "deadline", "estimated_hours", "priority", "notes"]
+
+# ===== UI selections =====
+year = st.selectbox(
+    "שנה",
+    options=list(range(2025, 2031)),
+    index=1,
+)
+
+month = st.selectbox(
+    "חודש",
+    options=list(range(1, 13)),
+    index=1,
+)
+
+def ensure_session_defaults(year: int, month: int) -> None:
+    if "tasks_df" not in st.session_state:
+        st.session_state["tasks_df"] = pd.DataFrame(
+            [
+                {"task_id": "T1", "course": "קורס לדוגמה", "title": "עבודה מסכמת", "deadline": f"{year:04d}-{month:02d}-20", "estimated_hours": 6.0, "priority": 4, "notes": ""},
+                {"task_id": "T2", "course": "קורס לדוגמה", "title": "קריאת מאמר", "deadline": f"{year:04d}-{month:02d}-12", "estimated_hours": 3.0, "priority": 3, "notes": ""},
+            ],
+            columns=TASK_COLS,
+        )
+
+    if "weekday_blocks_df" not in st.session_state:
+        st.session_state["weekday_blocks_df"] = pd.DataFrame(
+            [
+                {"weekday": "שני", "start": "17:00", "end": "19:00", "label": "עבודה/לימודים"},
+                {"weekday": "רביעי", "start": "08:00", "end": "12:00", "label": "קורס קבוע"},
+            ]
+        )
+
+    if "date_blocks_df" not in st.session_state:
+        st.session_state["date_blocks_df"] = pd.DataFrame(
+            [
+                {"date": f"{year:04d}-{month:02d}-10", "start": "18:00", "end": "22:00", "label": "מחויבות מיוחדת"},
+            ]
+        )
+
+# Call once, BEFORE rendering editors
+ensure_session_defaults(year, month)
+
 WEEKDAYS_HE = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
 # Python weekday(): Monday=0 ... Sunday=6
 WEEKDAY_NAME_TO_INT = {"שני": 0, "שלישי": 1, "רביעי": 2, "חמישי": 3, "שישי": 4, "שבת": 5, "ראשון": 6}
@@ -57,7 +101,7 @@ except:
 # Put this near the top of app.py (after st.set_page_config), before rendering UI.
 # Goal: enforce RTL layout, Hebrew-friendly typography, correct alignment for labels,
 # and keep numbers/dates readable (LTR) inside an RTL interface.
-# =========================
+# ========================= 
 
 def apply_hebrew_rtl_ui(app_title: str = "מתכנן המטלות האקדמי שלי 🎓") -> None:
     st.markdown(
@@ -968,7 +1012,7 @@ with st.form("planner_form", clear_on_submit=False):
 
 # מחוץ ל-form: commit ל-session_state
 if save_clicked or compute_clicked:
-    st.session_state.tasks_df = edited_tasks_df
+    st.session_state["tasks_df"] = edited_tasks_df
     st.session_state.weekday_blocks_df = edited_wd_df
     st.session_state.date_blocks_df = edited_date_df
 
