@@ -1030,6 +1030,7 @@ with col_b:
 
 if compute_clicked:
     tasks = df_to_tasks(st.session_state.tasks_df)
+
     if not tasks:
         st.warning("לא נמצאו מטלות תקינות. ודא שיש דדליין בפורמט YYYY-MM-DD ושעות משוערות.")
     else:
@@ -1037,22 +1038,32 @@ if compute_clicked:
         date_blocks = df_to_date_blocks(st.session_state.date_blocks_df)
 
         workday_start_str = workday_start_t.strftime("%H:%M")
-workday_end_str = workday_end_t.strftime("%H:%M")
+        workday_end_str = workday_end_t.strftime("%H:%M")
 
-schedule_params = {
-    "tasks": tasks,
-    "tz_name": tz_name.strip() or DEFAULT_TZ,
-    "year": int(year),
-    "month": int(month),
-    "work_start_hhmm": workday_start_str,
-    "work_end_hhmm": workday_end_str,
-    "daily_max_hours": float(daily_max_hours),
-    "max_task_hours_per_day": float(max_task_hours_per_day),
-    "slot_minutes": int(slot_minutes),
-    "buffer_hours": int(buffer_hours),
-    "weekday_blocks": weekday_blocks,
-    "date_blocks": date_blocks,
-}
+        schedule_params = {
+            "tasks": tasks,
+            "tz_name": tz_name.strip() or DEFAULT_TZ,
+            "year": int(year),
+            "month": int(month),
+            "work_start_hhmm": workday_start_str,
+            "work_end_hhmm": workday_end_str,
+            "daily_max_hours": float(daily_max_hours),
+            "max_task_hours_per_day": float(max_task_hours_per_day),
+            "slot_minutes": int(slot_minutes),
+            "buffer_hours": int(buffer_hours),
+            "weekday_blocks": weekday_blocks,
+            "date_blocks": date_blocks,
+        }
+
+        with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
+            try:
+                events, report = schedule_tasks(**schedule_params)
+                st.session_state.events = events
+                st.session_state.report = report
+                st.success(f"הלו״ז הושלם בהצלחה. נוצרו {len(events)} משבצות עבודה.")
+            except Exception as e:
+                st.error("אירעה שגיאה במהלך חישוב הלו״ז.")
+                st.exception(e)
 
 with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
     try:
