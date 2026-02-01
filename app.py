@@ -859,6 +859,46 @@ def to_ics(events: List[Event], tz_name: str, cal_name: str = "EduPlanner") -> s
 # =========================
 # Optional: AI Helpers (Safe Stubs)
 # =========================
+def delete_selected_and_empty_rows(tasks_df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int]:
+    """
+    Deletes rows that are either:
+    1) Marked for deletion via _delete == True
+    2) "Empty" rows: no course+title AND deadline is missing/NaT
+
+    Returns: (new_df, deleted_marked, deleted_empty)
+    """
+    if tasks_df is None or tasks_df.empty:
+        return tasks_df, 0, 0
+
+    df = tasks_df.copy()
+
+    # Ensure columns exist
+    if "_delete" not in df.columns:
+        df["_delete"] = False
+    for col in ["course", "title", "deadline"]:
+        if col not in df.columns:
+            df[col] = None
+
+    # Normalize deadline to detect NaT reliably
+    dl = pd.to_datetime(df["deadline"], errors="coerce")
+
+    marked_mask = df["_delete"].fillna(False).astype(bool)
+    empty_mask = (
+        df["course"].fillna("").astype(str).str.strip().eq("")
+        & df["title"].fillna("").astype(str).str.strip().eq("")
+        & dl.isna()
+    )
+
+    deleted_marked = int(marked_mask.sum())
+    deleted_empty = int(empty_mask.sum())
+
+    df = df[~(marked_mask | empty_mask)].copy()
+
+    # Reset delete column
+    df["_delete"] = False
+
+    return df, deleted_marked, deleted_empty
+
 def coerce_date_series_to_datetime(df: pd.DataFrame, col: str) -> pd.DataFrame:
     if col not in df.columns:
         return df
