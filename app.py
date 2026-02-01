@@ -483,6 +483,8 @@ def schedule_tasks(
     buffer_hours: int,
     weekday_blocks: Dict[int, List[Tuple[str, str]]],
     date_blocks: Dict[str, List[Tuple[str, str]]],
+    break_minutes: int = 15,
+    max_continuous_minutes: int = 120,
 ) -> Tuple[List[Event], Dict]:
     """
     Returns (events, report).
@@ -588,10 +590,55 @@ def schedule_tasks(
         windows = build_daily_available_windows(d, tz, work_start, work_end, weekday_blocks_t, date_blocks_t)
         slots = generate_daily_slots(windows, slot_minutes)
         day_slots[d] = slots
-
+    
     daily_max_minutes = int(daily_max_hours * 60)
     max_task_minutes_per_day = int(max_task_hours_per_day * 60)
     buffer_delta = timedelta(hours=buffer_hours)
+    
+    break_delta = timedelta(minutes=int(max(0, break_minutes)))
+    max_continuous = int(max(0, max_continuous_minutes))
+
+    def reorder_slots_spread(slots: List[Tuple[datetime, datetime]]) -> List[Tuple[datetime, datetime]]:
+        """
+        Reorders slots to encourage within-day spreading:
+        alternate afternoon and morning slots, so afternoons get used.
+        """
+        if not slots:
+            return slots
+
+        day = slots[0][0].date()
+        midday = datetime.combine(day, time(13, 0), tzinfo=tz)  # אפשר לשנות 13:00 לפי צורך
+
+        morning = [s for s in slots if s[0] < midday]
+        afternoon = [s for s in slots if s[0] >= midday]
+
+        out: List[Tuple[datetime, datetime]] = []
+        i = j = 0
+        take_afternoon = True
+
+        while i < len(morning) or j < len(afternoon):
+            if take_afternoon and j < len(afternoon):
+                out.append(afternoon[j]); j += 1
+            elif (not take_afternoon) and i < len(morning):
+                out.append(morning[i]); i += 1
+            else:
+                if j < len(afternoon):
+                    out.append(afternoon[j]); j += 1
+                elif i < len(morning):
+                    out.append(morning[i]); i += 1
+            take_afternoon = not take_afternoon
+
+        return out
+
+    # reorder each day's slots once
+    for d in list(day_slots.keys()):
+        day_slots[d] = reorder_slots_spread(day_slots[d])
+
+    # Track last event end per day (for enforcing breaks)
+    last_end_by_day: Dict[date, datetime] = {}
+
+    # Track continuous work minutes since last real break
+    continuous_minutes_by_day: Dict[date, int] = {d: 0 for d in day_slots.keys()}
 
     used_minutes_by_day: Dict[date, int] = {d: 0 for d in day_slots.keys()}
     used_minutes_by_task_day: Dict[Tuple[str, date], int] = {}
@@ -698,6 +745,39 @@ def schedule_tasks(
                     f"עדיפות: {t.priority}\n"
                     f"{t.notes}"
                 ).strip()
+                # --- Break constraint: ensure minimal gap between consecutive events in same day ---
+                prev_end = last_end_by_day.get(d)
+                if prev_end is not None:
+                    if s_dt < (prev_end + break_delta):
+                        continue
+
+                # --- Continuous work constraint ---
+                if max_continuous > 0 and continuous_minutes_by_day.get(d, 0) >= max_continuous:
+                    # Force a break by skipping slots until a gap appears
+                    continue
+
+                # Book this slot
+                title = f"{t.course} | {t.title}".strip(" |")
+                desc = f"משימת לימודים מתוכננת.\nדדליין: {t.deadline.strftime('%d/%m/%Y')}\nעדיפות: {t.priority}\n{t.notes}".strip()
+
+                events.append(Event(title=title, start_dt=s_dt, end_dt=e_dt, description=desc))
+
+                used_minutes_by_day[d] = used_minutes_by_day.get(d, 0) + slot_len
+                key = (t.task_id, d)
+                used_minutes_by_task_day[key] = used_minutes_by_task_day.get(key, 0) + slot_len
+                remaining_minutes -= slot_len
+
+                # update last_end and continuous counters
+                if prev_end is None:
+                    continuous_minutes_by_day[d] = slot_len
+                else:
+                    gap = s_dt - prev_end
+                    if gap >= break_delta:
+                        continuous_minutes_by_day[d] = slot_len
+                    else:
+                        continuous_minutes_by_day[d] = continuous_minutes_by_day.get(d, 0) + slot_len
+
+                last_end_by_day[d] = e_dt
 
                 events.append(Event(title=title, start_dt=s_alloc, end_dt=e_alloc, description=desc))
 
@@ -1528,6 +1608,20 @@ if compute_clicked:
     with st.spinner("המערכת בונה לו״ז חודשי תוך כיבוד אילוצים ועומסים..."):
         try:
             events, report = schedule_tasks(**schedule_params)
+                    # DEBUG – בדיקת פיזור וזמני שיבוץ
+            st.write(
+                "דוגמת אירועים ראשונים:",
+                [
+                    (
+                        e.start_dt.strftime("%d/%m %H:%M"),
+                        e.end_dt.strftime("%H:%M"),
+                        e.title
+                    )
+                    for e in events[:10]
+                ]
+            )
+
+
 
             st.session_state["events"] = events
             st.session_state["report"] = report
