@@ -682,6 +682,48 @@ def schedule_tasks(
     events: List[Event] = []
     unscheduled: List[Dict] = []
 
+    # -------------------------
+    # Add constraints as calendar events (so they export to ICS)
+    # IMPORTANT: must be after "events = []"
+    # -------------------------
+    constraint_events: List[Event] = []
+
+    def _add_constraint_event(d: date, bs: time, be: time, label: str, kind: str):
+        if bs >= be:
+            return
+        sdt = datetime.combine(d, bs, tzinfo=tz)
+        edt = datetime.combine(d, be, tzinfo=tz)
+        title = f"⛔ חסם: {label}".strip()
+        desc = f"חסם ({kind})."
+        constraint_events.append(Event(title=title, start_dt=sdt, end_dt=edt, description=desc))
+
+    # 1) Weekly blocks -> expand to concrete dates in month
+    # אם אין לך label במבנה, תן label כללי
+    for d in daterange(month_start, month_end_excl):
+        wd = d.weekday()
+        for block in weekday_blocks_t.get(wd, []):
+            # תומך גם ב-(time,time) וגם ב-(time,time,label)
+            if len(block) == 2:
+                bs, be = block
+                label = "אילוץ שבועי"
+            else:
+                bs, be, label = block
+            _add_constraint_event(d, bs, be, label, "weekday")
+
+    # 2) Date-specific blocks
+    for d, blocks in date_blocks_t.items():
+        if month_start <= d < month_end_excl:
+            for block in blocks:
+                if len(block) == 2:
+                    bs, be = block
+                    label = "אילוץ בתאריך"
+                else:
+                    bs, be, label = block
+                _add_constraint_event(d, bs, be, label, "date")
+
+    # Merge
+    events.extend(constraint_events)
+
     def day_has_capacity(d: date, add_minutes: int) -> bool:
         return used_minutes_by_day.get(d, 0) + add_minutes <= daily_max_minutes
 
