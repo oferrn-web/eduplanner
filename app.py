@@ -929,76 +929,42 @@ with tab_reset:
 # -------------------------
 # Main: Task input
 # -------------------------
-with st.form("planner_inputs", clear_on_submit=False):
+with st.form("planner_form", clear_on_submit=False):
 
     st.markdown("## הזנת מטלות 📝")
-
-    # הבטחת עמודות
-    TASK_COLS = ["task_id", "course", "title", "deadline", "estimated_hours", "priority", "notes"]
-    for c in TASK_COLS:
-        if c not in st.session_state.tasks_df.columns:
-            st.session_state.tasks_df[c] = "" if c != "estimated_hours" else 0.0
-    st.session_state.tasks_df = st.session_state.tasks_df[TASK_COLS].copy()
-
-    # המרה ל-datetime כדי ש-DateColumn יעבוד
-    st.session_state.tasks_df = coerce_date_series_to_datetime(st.session_state.tasks_df, "deadline")
 
     edited_tasks_df = st.data_editor(
         st.session_state.tasks_df,
         use_container_width=True,
         num_rows="dynamic",
-        column_config={
-            "task_id": st.column_config.TextColumn("מזהה"),
-            "course": st.column_config.TextColumn("שם הקורס"),
-            "title": st.column_config.TextColumn("שם המטלה"),
-            "deadline": st.column_config.DateColumn("דדליין", format="DD/MM/YYYY"),
-            "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
-            "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
-            "notes": st.column_config.TextColumn("הערות"),
-        },
-        key="w_tasks_editor_main",
+        key="tasks_editor_main",
     )
 
     st.divider()
-    st.markdown("## הגדרת חסמים ⛔")
 
-    # חסמים שבועיים
-    st.session_state.weekday_blocks_df = st.session_state.weekday_blocks_df.copy()
+    st.markdown("## חסמים ⛔")
+
     edited_wd_df = st.data_editor(
         st.session_state.weekday_blocks_df,
         use_container_width=True,
         num_rows="dynamic",
-        column_config={
-            "weekday": st.column_config.SelectboxColumn("יום", options=WEEKDAYS_HE),
-            "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-            "end": st.column_config.TextColumn("סיום (HH:MM)"),
-            "label": st.column_config.TextColumn("תיאור"),
-        },
         key="weekday_blocks_editor",
     )
-
-    # חסמים בתאריכים (כאן חובה datetime כדי ש-DateColumn יעבוד)
-    st.session_state.date_blocks_df = st.session_state.date_blocks_df.copy()
-    st.session_state.date_blocks_df = coerce_date_series_to_datetime(st.session_state.date_blocks_df, "date")
 
     edited_date_df = st.data_editor(
         st.session_state.date_blocks_df,
         use_container_width=True,
         num_rows="dynamic",
-        column_config={
-            "date": st.column_config.DateColumn("תאריך", format="DD/MM/YYYY"),
-            "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-            "end": st.column_config.TextColumn("סיום (HH:MM)"),
-            "label": st.column_config.TextColumn("תיאור"),
-        },
         key="date_blocks_editor",
     )
 
     col1, col2 = st.columns(2)
+
     with col1:
         save_clicked = st.form_submit_button("💾 שמור נתונים")
+
     with col2:
-        compute_clicked = st.form_submit_button("🚀 שמור וחשב לו״ז", type="primary")
+        compute_clicked = st.form_submit_button("🚀 חשב לו״ז", type="primary")
 
 # מחוץ ל-form: commit ל-session_state
 if save_clicked or compute_clicked:
