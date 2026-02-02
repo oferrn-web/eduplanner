@@ -1413,15 +1413,53 @@ with tab_basic:
     workday_end = workday_end_t.strftime("%H:%M")
 
 with tab_rules:
-    st.subheader("רזולוציית שיבוץ ומרווח ביטחון")
+    st.subheader("זמן עבודה רציף, מרווח ביטחון ורזולוציית שיבוץ")
 
     r1, r2 = st.columns(2)
-    with r1:
-        slot_minutes = st.select_slider("גודל משבצת (דקות)", options=[30, 45, 60, 90, 120], value=DEFAULT_SLOT_MINUTES)
-    with r2:
-        buffer_hours = st.select_slider("מרווח ביטחון לפני דדליין (שעות)", options=[24, 36, 48, 72], value=DEFAULT_BUFFER_HOURS)
 
-    st.caption("המלצה פרקטית: משבצת 60 דקות + Buffer של 48 שעות היא ברירת מחדל טובה לרוב הסטודנטים.")
+    with r1:
+        max_continuous_minutes = st.selectbox(
+            "זמן עבודה רציף (דקות)",
+            options=[45, 60, 75, 90, 120, 150, 180, 240],
+            index=[45, 60, 75, 90, 120, 150, 180, 240].index(
+                int(st.session_state.get("max_continuous_minutes", 120))
+                if int(st.session_state.get("max_continuous_minutes", 120)) in [45, 60, 75, 90, 120, 150, 180, 240]
+                else 120
+            ),
+            help="אחרי זמן זה המערכת תנסה ליצור הפסקה טבעית."
+        )
+
+        slot_minutes = st.selectbox(
+            "רזולוציית שיבוץ פנימית (דקות)",
+            options=[30, 45, 60],
+            index=[30, 45, 60].index(
+                int(st.session_state.get("slot_minutes", DEFAULT_SLOT_MINUTES))
+                if int(st.session_state.get("slot_minutes", DEFAULT_SLOT_MINUTES)) in [30, 45, 60]
+                else 60
+            ),
+            help="גודל ה'משבצות' שהמנוע חותך מהיום."
+        )
+
+    with r2:
+        buffer_hours = st.selectbox(
+            "מרווח ביטחון לפני דדליין (שעות)",
+            options=[0, 12, 24, 36, 48, 72, 96],
+            index=[0, 12, 24, 36, 48, 72, 96].index(
+                int(st.session_state.get("buffer_hours", DEFAULT_BUFFER_HOURS))
+                if int(st.session_state.get("buffer_hours", DEFAULT_BUFFER_HOURS)) in [0, 12, 24, 36, 48, 72, 96]
+                else 48
+            ),
+            help="המערכת תשאף לסיים עבודה לפחות X שעות לפני הדדליין."
+        )
+
+    # שמירה ל-session_state כדי שלא יתאפס בריראנר
+    st.session_state["max_continuous_minutes"] = int(max_continuous_minutes)
+    st.session_state["buffer_hours"] = int(buffer_hours)
+    st.session_state["slot_minutes"] = int(slot_minutes)
+
+    st.caption(
+        "המלצה: 120 דק׳ רצף + משבצת 60 דק׳ + Buffer של 48 שעות."
+    )
 
 with tab_reset:
     st.subheader("ניקוי נתונים")
@@ -2018,11 +2056,12 @@ if compute_clicked:
         "work_end_hhmm": workday_end_str,
         "daily_max_hours": float(daily_max_hours),
         "max_task_hours_per_day": float(max_task_hours_per_day),
-        "slot_minutes": int(slot_minutes),
-        "buffer_hours": int(buffer_hours),
         "weekday_blocks": weekday_blocks,
         "date_blocks": date_blocks,
         "policy": st.session_state.get("policy"),
+        "slot_minutes": int(st.session_state.get("slot_minutes", slot_minutes)),
+        "buffer_hours": int(st.session_state.get("buffer_hours", buffer_hours)),
+        "max_continuous_minutes": int(st.session_state.get("max_continuous_minutes", 120)),
     }
 
     st.write("DEBUG schedule_params keys:", list(schedule_params.keys()))
