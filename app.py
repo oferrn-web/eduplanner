@@ -485,6 +485,7 @@ def schedule_tasks(
     date_blocks: Dict[str, List[Tuple[str, str]]],
     break_minutes: int = 15,
     max_continuous_minutes: int = 120,
+    policy: dict | None = None,
 ) -> Tuple[List[Event], Dict]:
     """
     Returns (events, report).
@@ -749,131 +750,276 @@ def schedule_tasks(
         occupied_starts_by_day.setdefault(d, set()).add(s_dt.strftime("%H:%M"))
         occupied_ranges_by_day.setdefault(d, []).append((s_dt, e_dt))
 
-    # For each task, allocate minutes into FREE slots before (deadline - buffer)
-    for t in tasks_sorted:
-        remaining_minutes = int(max(0.0, float(t.estimated_hours)) * 60)
-        if remaining_minutes <= 0:
-            continue
+        # =========================
+    # Round-Robin (weighted) Scheduling Core + Policy-based slot scoring
+    # Replace the old: "for t in tasks_sorted: ..." block with this entire block
+    # =========================
 
+    pol = policy or {}
+    pol_hard = (pol.get("hard") or {})
+    pol_soft = (pol.get("soft") or {})
+
+    # Pull hard overrides (fallback to current parameters if not present)
+    break_minutes = int(pol_hard.get("break_minutes") or 0)
+    max_continuous_minutes = int(pol_hard.get("max_continuous_minutes") or 0)
+
+    avoid_weekdays = set(pol_hard.get("avoid_weekdays") or [])  # Hebrew names
+
+    # Soft preferences
+    prefer_windows = pol_soft.get("prefer_time_windows") or []
+    target_daily_load_ratio = float(pol_soft.get("target_daily_load_ratio") or 0.75)
+    target_daily_load_ratio = max(0.5, min(0.9, target_daily_load_ratio))
+    midday_hhmm = str(pol_soft.get("midday_hhmm") or "13:00").strip()
+    if not re.fullmatch(r"\d{2}:\d{2}", midday_hhmm):
+        midday_hhmm = "13:00"
+    midday_t = parse_hhmm(midday_hhmm)
+
+    break_delta = timedelta(minutes=max(0, break_minutes))
+
+    # Track last end and continuous work per day (for breaks and max continuous)
+    last_end_by_day: Dict[date, datetime] = {}
+    continuous_minutes_by_day: Dict[date, int] = {d: 0 for d in day_slots.keys()}
+
+    # Remaining minutes per task_id
+    remaining_by_task: Dict[str, int] = {}
+    task_map: Dict[str, Task] = {t.task_id: t for t in tasks_sorted}
+
+    for t in tasks_sorted:
+        remaining_by_task[t.task_id] = int(max(0.0, float(t.estimated_hours)) * 60)
+
+    def _he_weekday_name(d: date) -> str:
+        # Python weekday(): Mon=0..Sun=6. Your WEEKDAYS_HE likely starts Sunday.
+        # We'll map explicitly:
+        # 0 Mon,1 Tue,2 Wed,3 Thu,4 Fri,5 Sat,6 Sun
+        m = {
+            0: "שני",
+            1: "שלישי",
+            2: "רביעי",
+            3: "חמישי",
+            4: "שישי",
+            5: "שבת",
+            6: "ראשון",
+        }
+        return m.get(d.weekday(), "")
+
+    def _time_weight(s_dt: datetime) -> float:
+        # Soft preference windows weight, sum of matching windows
+        w = 0.0
+        st = s_dt.timetz().replace(tzinfo=None)
+        for win in prefer_windows:
+            ws = str(win.get("start") or "").strip()
+            we = str(win.get("end") or "").strip()
+            if not (re.fullmatch(r"\d{2}:\d{2}", ws) and re.fullmatch(r"\d{2}:\d{2}", we)):
+                continue
+            try:
+                ws_t = parse_hhmm(ws)
+                we_t = parse_hhmm(we)
+            except Exception:
+                continue
+            if ws_t <= st < we_t:
+                try:
+                    ww = float(win.get("weight"))
+                except Exception:
+                    ww = 0.0
+                w += max(0.0, min(1.0, ww))
+        # If no windows defined, neutral weight
+        return w if prefer_windows else 0.3
+
+    def _day_balance_score(d: date) -> float:
+        # Prefer days under target load
+        target = int(daily_max_minutes * target_daily_load_ratio)
+        used = used_minutes_by_day.get(d, 0)
+        if target <= 0:
+            return 0.0
+        return max(0.0, (target - used) / target)
+
+    def _slot_score(task_id: str, d: date, s_dt: datetime, e_dt: datetime) -> float:
+        # Hard filters are applied outside. This is soft score only.
+        score = 0.0
+
+        # 1) daily load balancing
+        score += 1.5 * _day_balance_score(d)
+
+        # 2) prefer time windows (user energy)
+        score += 1.0 * _time_weight(s_dt)
+
+        # 3) encourage spread within day (bigger gap since last event is better)
+        prev_end = last_end_by_day.get(d)
+        if prev_end is not None:
+            gap_m = (s_dt - prev_end).total_seconds() / 60.0
+            score += min(1.0, max(0.0, gap_m / 60.0))  # up to +1 for 60m gap
+        else:
+            # If no previous event, mildly prefer alternating morning/afternoon by date parity
+            st = s_dt.timetz().replace(tzinfo=None)
+            is_afternoon = (st >= midday_t)
+            if (d.day % 2 == 0 and not is_afternoon) or (d.day % 2 == 1 and is_afternoon):
+                score += 0.4
+
+        return score
+
+    def _hard_ok(task: Task, d: date, s_dt: datetime, e_dt: datetime, slot_len: int) -> bool:
+        # avoid weekdays hard rule
+        if _he_weekday_name(d) in avoid_weekdays:
+            return False
+
+        # capacity checks
+        if not day_has_capacity(d, slot_len):
+            return False
+        if not task_day_has_capacity(task.task_id, d, slot_len):
+            return False
+
+        # break between events in same day
+        prev_end = last_end_by_day.get(d)
+        if prev_end is not None and s_dt < (prev_end + break_delta):
+            return False
+
+        # max continuous work
+        if max_continuous_minutes > 0 and continuous_minutes_by_day.get(d, 0) >= max_continuous_minutes:
+            return False
+
+        return True
+
+    def _book(task: Task, d: date, s_dt: datetime, e_dt: datetime, slot_len: int):
+        title = f"{task.course} | {task.title}".strip(" |")
+        desc = f"משימת לימודים מתוכננת.\nדדליין: {task.deadline.strftime('%d/%m/%Y')}\nעדיפות: {task.priority}\n{task.notes}".strip()
+
+        events.append(Event(title=title, start_dt=s_dt, end_dt=e_dt, description=desc))
+
+        used_minutes_by_day[d] = used_minutes_by_day.get(d, 0) + slot_len
+        key = (task.task_id, d)
+        used_minutes_by_task_day[key] = used_minutes_by_task_day.get(key, 0) + slot_len
+
+        # update continuous + last_end
+        prev_end = last_end_by_day.get(d)
+        if prev_end is None:
+            continuous_minutes_by_day[d] = slot_len
+        else:
+            gap = s_dt - prev_end
+            if gap >= break_delta:
+                continuous_minutes_by_day[d] = slot_len
+            else:
+                continuous_minutes_by_day[d] = continuous_minutes_by_day.get(d, 0) + slot_len
+        last_end_by_day[d] = e_dt
+
+    # Build feasible horizon per task (deadline - buffer)
+    latest_allowed_by_task: Dict[str, date] = {}
+    for t in tasks_sorted:
         deadline_dt = datetime.combine(t.deadline, time(23, 59), tzinfo=tz)
         latest_allowed = deadline_dt - buffer_delta
+        latest_allowed_by_task[t.task_id] = latest_allowed.date()
 
-        start_day = max(month_start, now_dt.date())
-        end_day = min(month_end_excl - timedelta(days=1), latest_allowed.date())
+    # Candidate days for the month (from today/month_start to month_end)
+    start_day_global = max(month_start, now_dt.date())
+    end_day_global = month_end_excl - timedelta(days=1)
 
-        if end_day < start_day:
-            unscheduled.append(
-                {
-                    "task_id": t.task_id,
-                    "course": t.course,
-                    "title": t.title,
-                    "reason": "חלון הזמן האפשרי לפני הדדליין (כולל buffer) אינו נמצא בחודש הנבחר.",
-                    "remaining_hours": round(remaining_minutes / 60.0, 2),
-                }
-            )
+    # A bounded loop to prevent infinite loops
+    guard_iters = 0
+    max_iters = 200000
+
+    # Weighted Round-Robin pointer
+    rr_order = [t.task_id for t in tasks_sorted if remaining_by_task.get(t.task_id, 0) > 0]
+    rr_idx = 0
+
+    while True:
+        guard_iters += 1
+        if guard_iters > max_iters:
+            break
+
+        # stop condition: all done
+        active = [tid for tid, rem in remaining_by_task.items() if rem > 0]
+        if not active:
+            break
+
+        if not rr_order:
+            rr_order = active
+            rr_idx = 0
+
+        # pick next task in RR order, but skip completed
+        tid = rr_order[rr_idx % len(rr_order)]
+        rr_idx += 1
+        if remaining_by_task.get(tid, 0) <= 0:
             continue
 
-        # Greedy fill with light load-balancing:
-        # iterate days in chronological order, but skip days too close to daily max.
-        for d in daterange(start_day, end_day + timedelta(days=1)):
-            if remaining_minutes <= 0:
-                break
+        task = task_map[tid]
+        latest_allowed_day = min(end_day_global, latest_allowed_by_task.get(tid, end_day_global))
 
+        # If no feasible days for this task in month, mark unscheduled and zero it out
+        if latest_allowed_day < start_day_global:
+            unscheduled.append({
+                "task_id": task.task_id,
+                "course": task.course,
+                "title": task.title,
+                "reason": "חלון הזמן האפשרי לפני הדדליין (כולל buffer) אינו נמצא בחודש הנבחר.",
+                "remaining_hours": round(remaining_by_task[tid] / 60.0, 2),
+            })
+            remaining_by_task[tid] = 0
+            continue
+
+        # Find best slot (max score) among feasible days/slots
+        best = None  # (score, d, s_dt, e_dt, slot_len)
+        for d in daterange(start_day_global, latest_allowed_day + timedelta(days=1)):
             slots = day_slots.get(d, [])
             if not slots:
                 continue
 
-            day_load_ratio = used_minutes_by_day.get(d, 0) / max(1, daily_max_minutes)
-            if day_load_ratio >= 0.95:
+            # quick skip: if day already at cap
+            if used_minutes_by_day.get(d, 0) >= daily_max_minutes:
                 continue
 
             for s_dt, e_dt in slots:
-                if remaining_minutes <= 0:
-                    break
-
                 slot_len = int((e_dt - s_dt).total_seconds() // 60)
                 if slot_len <= 0:
                     continue
 
-                # If remaining work is less than a full slot, optionally allow a shorter final slot
-                # by trimming the end time (keeps "progression" and reduces over-allocation).
-                alloc_minutes = min(slot_len, remaining_minutes)
-                if alloc_minutes <= 0:
-                    continue
+                # do not allocate more than remaining time, trim by shortening end time if needed
+                needed = remaining_by_task[tid]
+                alloc = min(slot_len, needed)
 
-                # Enforce per-day and per-task-per-day caps
-                if not day_has_capacity(d, alloc_minutes):
-                    continue
-                if not task_day_has_capacity(t.task_id, d, alloc_minutes):
-                    continue
-
-                s_alloc = s_dt
-                e_alloc = s_dt + timedelta(minutes=alloc_minutes)
-
-                # Occupancy check (prevents overlaps and repeated 08:00)
-                if not slot_is_free(d, s_alloc, e_alloc):
-                    continue
-
-                title = f"{t.course} | {t.title}".strip(" |")
-                desc = (
-                    f"משימת לימודים מתוכננת.\n"
-                    f"דדליין: {t.deadline.isoformat()}\n"
-                    f"עדיפות: {t.priority}\n"
-                    f"{t.notes}"
-                ).strip()
-                # --- Break constraint: ensure minimal gap between consecutive events in same day ---
-                prev_end = last_end_by_day.get(d)
-                if prev_end is not None:
-                    if s_dt < (prev_end + break_delta):
+                # Keep slot_minutes granularity: allocate in chunks of slot_minutes
+                # If alloc is not multiple, floor to nearest slot_minutes (but at least slot_minutes)
+                if slot_minutes > 0:
+                    alloc = (alloc // slot_minutes) * slot_minutes
+                    if alloc <= 0:
                         continue
 
-                # --- Continuous work constraint ---
-                if max_continuous > 0 and continuous_minutes_by_day.get(d, 0) >= max_continuous:
-                    # Force a break by skipping slots until a gap appears
+                # build candidate end time
+                cand_end = s_dt + timedelta(minutes=alloc)
+
+                if not _hard_ok(task, d, s_dt, cand_end, alloc):
                     continue
 
-                # Book this slot
-                title = f"{t.course} | {t.title}".strip(" |")
-                desc = f"משימת לימודים מתוכננת.\nדדליין: {t.deadline.strftime('%d/%m/%Y')}\nעדיפות: {t.priority}\n{t.notes}".strip()
+                sc = _slot_score(tid, d, s_dt, cand_end)
+                if best is None or sc > best[0]:
+                    best = (sc, d, s_dt, cand_end, alloc)
 
-                events.append(Event(title=title, start_dt=s_dt, end_dt=e_dt, description=desc))
+        if best is None:
+            # cannot place this task any further, mark remaining as unscheduled and zero out
+            unscheduled.append({
+                "task_id": task.task_id,
+                "course": task.course,
+                "title": task.title,
+                "reason": "אין מספיק משבצות פנויות בחלונות הזמן והאילוצים שנבחרו (כולל policy).",
+                "remaining_hours": round(remaining_by_task[tid] / 60.0, 2),
+            })
+            remaining_by_task[tid] = 0
+            continue
 
-                used_minutes_by_day[d] = used_minutes_by_day.get(d, 0) + slot_len
-                key = (t.task_id, d)
-                used_minutes_by_task_day[key] = used_minutes_by_task_day.get(key, 0) + slot_len
-                remaining_minutes -= slot_len
+        _, d, s_dt, e_dt, alloc = best
+        _book(task, d, s_dt, e_dt, alloc)
+        remaining_by_task[tid] -= alloc
 
-                # update last_end and continuous counters
-                if prev_end is None:
-                    continuous_minutes_by_day[d] = slot_len
-                else:
-                    gap = s_dt - prev_end
-                    if gap >= break_delta:
-                        continuous_minutes_by_day[d] = slot_len
-                    else:
-                        continuous_minutes_by_day[d] = continuous_minutes_by_day.get(d, 0) + slot_len
-
-                last_end_by_day[d] = e_dt
-
-                events.append(Event(title=title, start_dt=s_alloc, end_dt=e_alloc, description=desc))
-
-                used_minutes_by_day[d] = used_minutes_by_day.get(d, 0) + alloc_minutes
-                key = (t.task_id, d)
-                used_minutes_by_task_day[key] = used_minutes_by_task_day.get(key, 0) + alloc_minutes
-                remaining_minutes -= alloc_minutes
-
-                mark_slot_used(d, s_alloc, e_alloc)
-
-        if remaining_minutes > 0:
-            unscheduled.append(
-                {
-                    "task_id": t.task_id,
-                    "course": t.course,
-                    "title": t.title,
-                    "reason": "אין מספיק משבצות פנויות בחלונות הזמן והאילוצים שנבחרו.",
-                    "remaining_hours": round(remaining_minutes / 60.0, 2),
-                }
-            )
+    # Any leftover positive remaining should become unscheduled
+    for tid, rem in remaining_by_task.items():
+        if rem > 0:
+            t = task_map[tid]
+            unscheduled.append({
+                "task_id": t.task_id,
+                "course": t.course,
+                "title": t.title,
+                "reason": "לא שובץ במלואו (סיום לולאה/guard).",
+                "remaining_hours": round(rem / 60.0, 2),
+            })
+            remaining_by_task[tid] = 0
 
     validation = validate_schedule(events, tz, daily_max_minutes, weekday_blocks_t, date_blocks_t)
     report = {
@@ -1621,6 +1767,207 @@ st.divider()
 st.markdown("## חישוב לו״ז אסטרטגי וחכם 🚀")
 st.caption("הליבה כאן היא שיבוץ דטרמיניסטי עם בדיקות תקינות. ה-AI, אם תרצה, יכול לשמש להסברים, לא לחישוב השעות.")
 
+# =========================
+# Smart Policy (Free text -> AI -> constraints/preferences)
+# Place this block under "שיבוץ" settings, BEFORE the compute/explain buttons
+# =========================
+st.markdown("### 🧭 Policy חכם (אופציונלי)")
+st.caption("כתוב העדפות ומגבלות בשפה חופשית. ה-AI ינסה לתרגם אותן למדיניות שיבוץ (Policy) שתשפיע על המנוע הדטרמיניסטי.")
+
+if "policy" not in st.session_state:
+    st.session_state["policy"] = None
+if "policy_notes" not in st.session_state:
+    st.session_state["policy_notes"] = ""
+
+def _extract_json_from_model_text(text: str) -> str:
+    t = (text or "").strip()
+    # Try fenced ```json
+    m = re.search(r"```json\s*(\{.*?\})\s*```", t, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Try any {...} block (best-effort)
+    m2 = re.search(r"(\{.*\})", t, flags=re.DOTALL)
+    if m2:
+        return m2.group(1).strip()
+    return t
+
+WEEKDAYS_HE_LIST = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"]
+
+def _is_hhmm(s: str) -> bool:
+    return bool(re.fullmatch(r"\d{2}:\d{2}", (s or "").strip()))
+
+def _clamp(x: float, a: float, b: float) -> float:
+    return max(a, min(b, x))
+
+def sanitize_policy(raw: dict, defaults: dict) -> dict:
+    raw = raw or {}
+    hard = raw.get("hard") or {}
+    soft = raw.get("soft") or {}
+
+    out = {"hard": {}, "soft": {}, "notes": str(raw.get("notes") or "").strip()}
+
+    # Hard
+    out["hard"]["work_start"] = hard.get("work_start") if _is_hhmm(hard.get("work_start")) else defaults["work_start"]
+    out["hard"]["work_end"]   = hard.get("work_end")   if _is_hhmm(hard.get("work_end"))   else defaults["work_end"]
+
+    def _num(v, d):
+        try:
+            return float(v)
+        except Exception:
+            return float(d)
+
+    out["hard"]["daily_max_hours"] = _clamp(_num(hard.get("daily_max_hours"), defaults["daily_max_hours"]), 0.5, 16.0)
+    out["hard"]["max_task_hours_per_day"] = _clamp(_num(hard.get("max_task_hours_per_day"), defaults["max_task_hours_per_day"]), 0.5, 8.0)
+
+    out["hard"]["break_minutes"] = int(_clamp(_num(hard.get("break_minutes"), defaults["break_minutes"]), 0, 180))
+    out["hard"]["max_continuous_minutes"] = int(_clamp(_num(hard.get("max_continuous_minutes"), defaults["max_continuous_minutes"]), 0, 600))
+    out["hard"]["buffer_hours"] = int(_clamp(_num(hard.get("buffer_hours"), defaults["buffer_hours"]), 0, 240))
+
+    avoid = hard.get("avoid_weekdays") or []
+    out["hard"]["avoid_weekdays"] = [d for d in avoid if d in WEEKDAYS_HE_LIST]
+
+    # Fixed blocks (weekday-based). Optional.
+    fixed_blocks = []
+    for b in (hard.get("fixed_blocks") or []):
+        wd = str(b.get("weekday") or "").strip()
+        s = str(b.get("start") or "").strip()
+        e = str(b.get("end") or "").strip()
+        label = str(b.get("label") or "אילוץ").strip()
+        if wd in WEEKDAYS_HE_LIST and _is_hhmm(s) and _is_hhmm(e):
+            fixed_blocks.append({"weekday": wd, "start": s, "end": e, "label": label})
+    out["hard"]["fixed_blocks"] = fixed_blocks
+
+    # Soft
+    # prefer_time_windows: list of {"start","end","weight"} weight 0..1
+    ptw = []
+    for w in (soft.get("prefer_time_windows") or []):
+        s = str(w.get("start") or "").strip()
+        e = str(w.get("end") or "").strip()
+        try:
+            weight = float(w.get("weight"))
+        except Exception:
+            continue
+        if _is_hhmm(s) and _is_hhmm(e) and 0.0 <= weight <= 1.0:
+            ptw.append({"start": s, "end": e, "weight": weight})
+    out["soft"]["prefer_time_windows"] = ptw
+
+    # target_daily_load_ratio: 0.5..0.9
+    try:
+        tdlr = float(soft.get("target_daily_load_ratio"))
+    except Exception:
+        tdlr = float(defaults["target_daily_load_ratio"])
+    out["soft"]["target_daily_load_ratio"] = _clamp(tdlr, 0.5, 0.9)
+
+    # task_switch_penalty 0..1 (higher = prefer staying on same task)
+    try:
+        tsp = float(soft.get("task_switch_penalty"))
+    except Exception:
+        tsp = float(defaults["task_switch_penalty"])
+    out["soft"]["task_switch_penalty"] = _clamp(tsp, 0.0, 1.0)
+
+    # midday split for morning/afternoon (optional)
+    md = str(soft.get("midday_hhmm") or defaults["midday_hhmm"]).strip()
+    out["soft"]["midday_hhmm"] = md if _is_hhmm(md) else defaults["midday_hhmm"]
+
+    return out
+
+policy_text = st.text_area(
+    "תאר במילים חופשיות את ההעדפות והמגבלות שלך (דוגמה: \"עובד הכי טוב בבוקר 09:00-12:00, אחרי 16:00 לא לומד, הפסקה כל שעה, שישי פנוי רק בבוקר\")",
+    height=120,
+    placeholder="כתוב כאן...",
+    key="w_policy_free_text"
+)
+
+pol_col1, pol_col2 = st.columns([1, 1])
+with pol_col1:
+    analyze_policy_clicked = st.button("🧠 נתח policy מהטקסט", type="secondary")
+with pol_col2:
+    clear_policy_clicked = st.button("🧹 נקה policy", type="secondary")
+
+if clear_policy_clicked:
+    st.session_state["policy"] = None
+    st.session_state["policy_notes"] = ""
+    st.success("policy נוקה.")
+
+if analyze_policy_clicked:
+    # Defaults derived from current UI variables (must exist in your app before this block)
+    defaults = {
+        "work_start": workday_start_t.strftime("%H:%M"),
+        "work_end": workday_end_t.strftime("%H:%M"),
+        "daily_max_hours": float(daily_max_hours),
+        "max_task_hours_per_day": float(max_task_hours_per_day),
+        "break_minutes": int(st.session_state.get("break_minutes", 15)) if "break_minutes" in st.session_state else 15,
+        "max_continuous_minutes": int(st.session_state.get("max_continuous_minutes", 120)) if "max_continuous_minutes" in st.session_state else 120,
+        "buffer_hours": int(buffer_hours),
+        "target_daily_load_ratio": 0.75,
+        "task_switch_penalty": 0.2,
+        "midday_hhmm": "13:00",
+    }
+
+    policy_prompt = f"""
+אתה מומחה לניהול זמן. קיבלת טקסט חופשי בעברית עם העדפות/מגבלות למידה.
+החזר אך ורק JSON תקין (ללא טקסט נוסף) לפי הסכימה:
+
+{{
+  "hard": {{
+    "work_start": "HH:MM",
+    "work_end": "HH:MM",
+    "daily_max_hours": number,
+    "max_task_hours_per_day": number,
+    "break_minutes": number,
+    "max_continuous_minutes": number,
+    "buffer_hours": number,
+    "avoid_weekdays": ["ראשון"|"שני"|"שלישי"|"רביעי"|"חמישי"|"שישי"|"שבת"],
+    "fixed_blocks": [
+      {{"weekday":"...","start":"HH:MM","end":"HH:MM","label":"..."}}
+    ]
+  }},
+  "soft": {{
+    "prefer_time_windows": [
+      {{"start":"HH:MM","end":"HH:MM","weight": number}}
+    ],
+    "target_daily_load_ratio": number,
+    "task_switch_penalty": number,
+    "midday_hhmm": "HH:MM"
+  }},
+  "notes": "סיכום קצר בעברית"
+}}
+
+כללים מחייבים:
+1) אל תמציא פרטים. אם לא נכתב במפורש, השאר שדה ריק/אל תכלול אותו.
+2) שעות תמיד HH:MM.
+3) weight בין 0 ל-1. target_daily_load_ratio בין 0.5 ל-0.9. task_switch_penalty בין 0 ל-1.
+
+ברירות מחדל אם אין מידע:
+work_start={defaults["work_start"]}, work_end={defaults["work_end"]},
+daily_max_hours={defaults["daily_max_hours"]}, max_task_hours_per_day={defaults["max_task_hours_per_day"]},
+break_minutes={defaults["break_minutes"]}, max_continuous_minutes={defaults["max_continuous_minutes"]},
+buffer_hours={defaults["buffer_hours"]}, midday_hhmm={defaults["midday_hhmm"]}.
+
+הטקסט:
+\"\"\"{policy_text}\"\"\"
+"""
+
+    try:
+        with st.spinner("מנתח policy מהטקסט..."):
+            raw_text = model.generate_content(policy_prompt).text
+        json_str = _extract_json_from_model_text(raw_text)
+        raw_policy = json.loads(json_str)
+        pol = sanitize_policy(raw_policy, defaults)
+
+        st.session_state["policy"] = pol
+        st.session_state["policy_notes"] = pol.get("notes", "")
+
+        st.success("policy הופק ונשמר. הוא יופעל בחישוב הבא (Compute).")
+    except Exception as e:
+        st.error("לא הצלחתי לנתח policy. פירוט:")
+        st.exception(e)
+
+if st.session_state.get("policy"):
+    with st.expander("הצג policy נוכחי", expanded=False):
+        st.write(st.session_state.get("policy_notes", ""))
+        st.json(st.session_state["policy"])
+
 col_a, col_b = st.columns([1, 1])
 with col_a:
     compute_clicked = st.button("🚀 חשב לו״ז אסטרטגי וחכם", type="primary")
@@ -1675,6 +2022,7 @@ if compute_clicked:
         "buffer_hours": int(buffer_hours),
         "weekday_blocks": weekday_blocks,
         "date_blocks": date_blocks,
+        "policy": st.session_state.get("policy"),
     }
 
     st.write("DEBUG schedule_params keys:", list(schedule_params.keys()))
