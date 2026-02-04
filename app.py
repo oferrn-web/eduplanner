@@ -466,6 +466,26 @@ def generate_daily_slots(
             cur = cur + timedelta(minutes=slot_minutes)
     return slots
 
+def generate_start_times(
+    windows: List[Tuple[datetime, datetime]],
+    step_minutes: int
+) -> List[datetime]:
+    """
+    Returns list of possible start datetimes, spaced by step_minutes, within each window.
+    """
+    step_minutes = int(step_minutes) if step_minutes else 15
+    step_minutes = max(5, min(60, step_minutes))
+
+    starts: List[datetime] = []
+    step = timedelta(minutes=step_minutes)
+
+    for ws, we in windows:
+        cur = ws
+        # generate start points up to window end (actual end check happens when booking)
+        while cur < we:
+            starts.append(cur)
+            cur = cur + step
+    return starts
 
 # =========================
 # Deterministic Scheduling Engine (with occupancy + progression)
@@ -479,7 +499,7 @@ def schedule_tasks(
     work_end_hhmm: str,
     daily_max_hours: float,
     max_task_hours_per_day: float,
-    slot_minutes: int,
+    start_step_minutes: int,
     buffer_hours: int,
     weekday_blocks: Dict[int, List[Tuple[str, str]]],
     date_blocks: Dict[str, List[Tuple[str, str]]],
@@ -589,11 +609,15 @@ def schedule_tasks(
         key=lambda t: (t.deadline, -int(clamp_float(t.priority, 1, 5)), -float(t.estimated_hours)),
     )
 
-    day_slots: Dict[date, List[Tuple[datetime, datetime]]] = {}
+    day_windows: Dict[date, List[Tuple[datetime, datetime]]] = {}
+    day_slots: Dict[date, List[datetime]] = {}
+
     for d in daterange(month_start, month_end_excl):
         windows = build_daily_available_windows(d, tz, work_start, work_end, weekday_blocks_t, date_blocks_t)
-        slots = generate_daily_slots(windows, slot_minutes)
-        day_slots[d] = slots
+        START_STEP_MINUTES = 15
+        starts = generate_start_times(windows, START_STEP_MINUTES)
+        day_slots[d] = starts
+        day_windows[d] = windows
     
     daily_max_minutes = int(daily_max_hours * 60)
     max_task_minutes_per_day = int(max_task_hours_per_day * 60)
@@ -750,7 +774,7 @@ def schedule_tasks(
         occupied_starts_by_day.setdefault(d, set()).add(s_dt.strftime("%H:%M"))
         occupied_ranges_by_day.setdefault(d, []).append((s_dt, e_dt))
 
-        # =========================
+    # =========================
     # Round-Robin (weighted) Scheduling Core + Policy-based slot scoring
     # Replace the old: "for t in tasks_sorted: ..." block with this entire block
     # =========================
@@ -958,32 +982,41 @@ def schedule_tasks(
         # Find best slot (max score) among feasible days/slots
         best = None  # (score, d, s_dt, e_dt, slot_len)
         for d in daterange(start_day_global, latest_allowed_day + timedelta(days=1)):
-            slots = day_slots.get(d, [])
-            if not slots:
+            starts = day_slots.get(d, [])
+            if not starts:
                 continue
 
             # quick skip: if day already at cap
             if used_minutes_by_day.get(d, 0) >= daily_max_minutes:
                 continue
 
-            for s_dt, e_dt in slots:
-                slot_len = int((e_dt - s_dt).total_seconds() // 60)
-                if slot_len <= 0:
+            for s_dt in starts:
+                needed = remaining_by_task[tid]
+                if needed <= 0:
+                    break
+
+                # זמן עבודה רציף = אורך בלוק עבודה
+                work_block_minutes = int(pol_hard.get("max_continuous_minutes") or 120)
+                min_block_minutes = 60  # אפשר לשנות ל-45 אם אתה רוצה
+                needed = remaining_by_task[tid]
+
+                alloc = min(work_block_minutes, needed)
+
+                # אם נשאר מעט בסוף מטלה, אפשר לאפשר בלוק קצר
+                if alloc < min_block_minutes and needed >= min_block_minutes:
+                    # אל תבזבז בלוק קטן באמצע מטלה, דלג על ההתחלה הזו
                     continue
 
-                # do not allocate more than remaining time, trim by shortening end time if needed
-                needed = remaining_by_task[tid]
-                alloc = min(slot_len, needed)
-
-                # Keep slot_minutes granularity: allocate in chunks of slot_minutes
-                # If alloc is not multiple, floor to nearest slot_minutes (but at least slot_minutes)
-                if slot_minutes > 0:
-                    alloc = (alloc // slot_minutes) * slot_minutes
-                    if alloc <= 0:
-                        continue
-
-                # build candidate end time
                 cand_end = s_dt + timedelta(minutes=alloc)
+
+                # ודא שהבלוק נכנס בתוך אחד מחלונות הזמינות (אחרי החסמים)
+                ok_in_window = False
+                for ws, we in day_windows.get(d, []):
+                    if s_dt >= ws and cand_end <= we:
+                        ok_in_window = True
+                        break
+                if not ok_in_window:
+                    continue
 
                 if not _hard_ok(task, d, s_dt, cand_end, alloc):
                     continue
@@ -1028,7 +1061,7 @@ def schedule_tasks(
         "daily_max_hours": float(daily_max_hours),
         "work_start": work_start_hhmm,
         "work_end": work_end_hhmm,
-        "slot_minutes": int(slot_minutes),
+        "start_step_minutes": int(start_step_minutes),
         "max_task_hours_per_day": float(max_task_hours_per_day),
         "buffer_hours": int(buffer_hours),
         "unscheduled": unscheduled,
@@ -1413,31 +1446,19 @@ with tab_basic:
     workday_end = workday_end_t.strftime("%H:%M")
 
 with tab_rules:
-    st.subheader("זמן עבודה רציף, מרווח ביטחון ורזולוציית שיבוץ")
+    st.subheader("זמן עבודה רציף, רזולוציית התחלה ומרווח ביטחון")
 
     r1, r2 = st.columns(2)
 
     with r1:
         max_continuous_minutes = st.selectbox(
-            "זמן עבודה רציף (דקות)",
+            "זמן עבודה רציף (דקות) , אורך בלוק עבודה",
             options=[45, 60, 75, 90, 120, 150, 180, 240],
             index=[45, 60, 75, 90, 120, 150, 180, 240].index(
                 int(st.session_state.get("max_continuous_minutes", 120))
                 if int(st.session_state.get("max_continuous_minutes", 120)) in [45, 60, 75, 90, 120, 150, 180, 240]
                 else 120
             ),
-            help="אחרי זמן זה המערכת תנסה ליצור הפסקה טבעית."
-        )
-
-        slot_minutes = st.selectbox(
-            "רזולוציית שיבוץ פנימית (דקות)",
-            options=[30, 45, 60],
-            index=[30, 45, 60].index(
-                int(st.session_state.get("slot_minutes", DEFAULT_SLOT_MINUTES))
-                if int(st.session_state.get("slot_minutes", DEFAULT_SLOT_MINUTES)) in [30, 45, 60]
-                else 60
-            ),
-            help="גודל ה'משבצות' שהמנוע חותך מהיום."
         )
 
     with r2:
@@ -1449,17 +1470,23 @@ with tab_rules:
                 if int(st.session_state.get("buffer_hours", DEFAULT_BUFFER_HOURS)) in [0, 12, 24, 36, 48, 72, 96]
                 else 48
             ),
-            help="המערכת תשאף לסיים עבודה לפחות X שעות לפני הדדליין."
         )
 
-    # שמירה ל-session_state כדי שלא יתאפס בריראנר
+        break_minutes = st.selectbox(
+            "הפסקה מינימלית בין בלוקים (דקות)",
+            options=[0, 5, 10, 15, 20, 30, 45, 60],
+            index=[0, 5, 10, 15, 20, 30, 45, 60].index(
+                int(st.session_state.get("break_minutes", 15))
+                if int(st.session_state.get("break_minutes", 15)) in [0, 5, 10, 15, 20, 30, 45, 60]
+                else 15
+            ),
+        )
+
     st.session_state["max_continuous_minutes"] = int(max_continuous_minutes)
     st.session_state["buffer_hours"] = int(buffer_hours)
-    st.session_state["slot_minutes"] = int(slot_minutes)
+    st.session_state["break_minutes"] = int(break_minutes)
 
-    st.caption(
-        "המלצה: 120 דק׳ רצף + משבצת 60 דק׳ + Buffer של 48 שעות."
-    )
+    st.caption("כעת זמן עבודה רציף הוא אורך אירוע העבודה. הרזולוציה משפיעה רק על נקודת ההתחלה.")
 
 with tab_reset:
     st.subheader("ניקוי נתונים")
@@ -2059,7 +2086,7 @@ if compute_clicked:
         "weekday_blocks": weekday_blocks,
         "date_blocks": date_blocks,
         "policy": st.session_state.get("policy"),
-        "slot_minutes": int(st.session_state.get("slot_minutes", slot_minutes)),
+        "start_step_minutes": 15,
         "buffer_hours": int(st.session_state.get("buffer_hours", buffer_hours)),
         "max_continuous_minutes": int(st.session_state.get("max_continuous_minutes", 120)),
     }
