@@ -656,22 +656,26 @@ def schedule_tasks(
     # Merge: include constraint events in output (so they export to ICS)
     events.extend(constraint_events)
 
-    def reorder_slots_spread(slots: List[Tuple[datetime, datetime]]) -> List[Tuple[datetime, datetime]]:
+    def reorder_slots_spread(starts: List[datetime]) -> List[datetime]:
         """
-        Reorders slots to encourage within-day spreading:
-        alternate afternoon and morning slots, so afternoons get used.
+        Reorders start-times to encourage within-day spreading:
+        alternate afternoon and morning starts, so afternoons get used.
         """
-        if not slots:
-            return slots
+        if not starts:
+            return starts
 
-        day = slots[0][0].date()
+        # Ensure deterministic order before splitting
+        starts_sorted = sorted(starts)
+
+        day = starts_sorted[0].date()
         midday = datetime.combine(day, time(13, 0), tzinfo=tz)  # אפשר לשנות 13:00 לפי צורך
 
-        morning = [s for s in slots if s[0] < midday]
-        afternoon = [s for s in slots if s[0] >= midday]
+        morning = [s for s in starts_sorted if s < midday]
+        afternoon = [s for s in starts_sorted if s >= midday]
 
-        out: List[Tuple[datetime, datetime]] = []
+        out: List[datetime] = []
         i = j = 0
+
         # Start alternating side per date to balance: even days -> morning first, odd -> afternoon first
         take_afternoon = (day.day % 2 == 1)
 
@@ -688,6 +692,7 @@ def schedule_tasks(
             take_afternoon = not take_afternoon
 
         return out
+
 
     # reorder each day's slots once
     for d in list(day_slots.keys()):
