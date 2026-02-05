@@ -1777,40 +1777,14 @@ elif step == 6:
             if df_tasks.empty:
                 st.warning("לא נמצאו מטלות משובצות. בדוק/י חלונות עבודה, מגבלות יומיות, ו־Buffer.", icon="⚠️")
             else:
-                render_html_table(
-                    df_tasks,
-                    use_container_width=True,
-                    hide_index=True,
-                    height_px=520,
-                    column_config={
-                        "כותרת": st.column_config.TextColumn("כותרת", width="large"),
-                        "סוג": st.column_config.TextColumn("סוג", width="small"),
-                        "תאריך": st.column_config.TextColumn("תאריך", width="small"),
-                        "יום": st.column_config.TextColumn("יום", width="small"),
-                        "התחלה": st.column_config.TextColumn("התחלה", width="small"),
-                        "סיום": st.column_config.TextColumn("סיום", width="small"),
-                    },
-                )
+                render_html_table(df_tasks, height_px=520)
 
             st.subheader("חסמים שנכללו ביומן")
             df_constraints = _events_to_rows(constraint_events)
             if df_constraints.empty:
                 st.info("לא הוגדרו/נכללו חסמים בשיבוץ.", icon="ℹ️")
             else:
-                render_html_table(
-                    df_constraints,
-                    use_container_width=True,
-                    hide_index=True,
-                    height_px=420,
-                    column_config={
-                        "כותרת": st.column_config.TextColumn("כותרת", width="large"),
-                        "סוג": st.column_config.TextColumn("סוג", width="small"),
-                        "תאריך": st.column_config.TextColumn("תאריך", width="small"),
-                        "יום": st.column_config.TextColumn("יום", width="small"),
-                        "התחלה": st.column_config.TextColumn("התחלה", width="small"),
-                        "סיום": st.column_config.TextColumn("סיום", width="small"),
-                    },
-                )
+                render_html_table(df_constraints, height_px=420)
 
             # ----------- ICS export -----------
             st.subheader("ייצוא ליומן")
