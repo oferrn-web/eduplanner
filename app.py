@@ -1199,6 +1199,31 @@ st.set_page_config(page_title="EduPlanner Wizard", layout="wide")
 inject_rtl_css()
 init_wizard_state()
 
+# =========================
+# Global RTL Styling
+# =========================
+st.markdown("""
+<style>
+html, body, [class*="stApp"] { direction: rtl; text-align: right; }
+
+/* כל טקסט */
+h1,h2,h3,h4,h5,h6,p,li,div,span,label { direction: rtl; text-align: right; }
+
+/* Sidebar */
+section[data-testid="stSidebar"] * { direction: rtl; text-align: right; }
+
+/* קלטים */
+input, textarea { direction: rtl !important; text-align: right !important; }
+
+/* טבלאות Streamlit */
+div[data-testid="stDataFrame"] * { direction: rtl !important; text-align: right !important; }
+div[data-testid="stDataEditor"] * { direction: rtl !important; text-align: right !important; }
+
+/* גלילה אופקית במקום חיתוך */
+div[data-testid="stDataFrame"] { overflow-x: auto !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # Sidebar: always show "reset" and minimal nav indicator
 st.sidebar.header("EduPlanner ⚙️")
 st.sidebar.caption("אפליקציית תכנון חודשית מדורגת.")
@@ -1581,11 +1606,13 @@ elif step == 5:
 # Step 6: Compute + results + ICS
 # =========================
 elif step == 6:
-    step_header("חישוב שיבוץ וייצוא", "מנוע דטרמיניסטי, עם policy אופציונלי, ויצוא ICS תקני.")
+    step_header("חישוב שיבוץ וייצוא", "מנוע דטרמיניסטי, עם policy אופציונלי, וייצוא ICS תקני.")
+
     if not st.session_state.get("wizard_saved_payload"):
         st.warning("לא נמצא snapshot שמור. חזור/י לשלב Policy ואימות ושמור/י.", icon="⚠️")
         if st.button("⬅️ חזרה לשלב 5", type="secondary"):
             go_step(5)
+
     else:
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
@@ -1604,15 +1631,20 @@ elif step == 6:
             st.rerun()
 
         if compute:
+            # ---- validate tasks (no missing deadlines) ----
             tasks = df_to_tasks(st.session_state["tasks_df"])
+
             missing = 0
-            for row in st.session_state["tasks_df"].to_dict(orient="records"):
-                if row.get("delete"):
-                    continue
-                try:
-                    _ = coerce_date_value_to_date(row.get("deadline"))
-                except Exception:
-                    missing += 1
+            df_check = st.session_state["tasks_df"]
+            if df_check is not None and not df_check.empty:
+                for row in df_check.to_dict(orient="records"):
+                    if row.get("delete"):
+                        continue
+                    try:
+                        _ = coerce_date_value_to_date(row.get("deadline"))
+                    except Exception:
+                        missing += 1
+
             if missing > 0:
                 st.error(f"יש {missing} שורות מטלה עם דדליין חסר/לא תקין. תקן/י או סמן/י למחיקה ואז נסה שוב.")
                 st.stop()
@@ -1621,7 +1653,6 @@ elif step == 6:
             date_blocks = df_to_date_blocks(st.session_state["date_blocks_df"])
             fixed_daily_blocks = df_to_fixed_daily_blocks(st.session_state["fixed_daily_df"])
 
-            # Build dicts for schedule_tasks signature
             schedule_params = {
                 "tasks": tasks,
                 "tz_name": st.session_state["tz_name"],
@@ -1657,27 +1688,80 @@ elif step == 6:
         report = st.session_state.get("report")
 
         if events and report:
+            # ----------- quick visibility: policy + counts -----------
+            pol = st.session_state.get("policy")
+            if pol:
+                with st.expander("Policy שנקלט (לבדיקה)", expanded=False):
+                    st.json(pol)
+
+            task_events = [e for e in events if getattr(e, "kind", "") != "constraint"]
+            constraint_events = [e for e in events if getattr(e, "kind", "") == "constraint"]
+
+            st.caption(f"סה״כ אירועים: {len(events)} | מטלות: {len(task_events)} | חסמים: {len(constraint_events)}")
+
+            # ----------- Report -----------
             st.subheader("דו״ח תקינות")
             st.json(report)
 
-            st.subheader("טבלת שיבוץ")
-            # Present events as table
-            rows = []
-            for ev in sorted(events, key=lambda e: e.start_dt):
-                rows.append(
-                    {
-                        "תאריך": ev.start_dt.strftime("%d/%m/%Y"),
-                        "יום": WEEKDAYS_HE[ev.start_dt.weekday()],
-                        "התחלה": ev.start_dt.strftime("%H:%M"),
-                        "סיום": ev.end_dt.strftime("%H:%M"),
-                        "סוג": "חסם" if ev.kind == "constraint" else "מטלה",
-                        "כותרת": ev.title,
-                    }
-                )
-            df_out = pd.DataFrame(rows)
-            st.dataframe(df_out, use_container_width=True, hide_index=True)
+            # ----------- Tables -----------
+            def _events_to_rows(ev_list):
+                rows = []
+                for ev in sorted(ev_list, key=lambda e: e.start_dt):
+                    rows.append(
+                        {
+                            "כותרת": ev.title,
+                            "סוג": "חסם" if getattr(ev, "kind", "") == "constraint" else "מטלה",
+                            "תאריך": ev.start_dt.strftime("%d/%m/%Y"),
+                            "יום": WEEKDAYS_HE[ev.start_dt.weekday()],
+                            "התחלה": ev.start_dt.strftime("%H:%M"),
+                            "סיום": ev.end_dt.strftime("%H:%M"),
+                        }
+                    )
+                df = pd.DataFrame(rows)
+                if not df.empty:
+                    # סדר עמודות כדי לתת לכותרת יותר מקום בפועל
+                    df = df[["כותרת", "סוג", "תאריך", "יום", "התחלה", "סיום"]]
+                return df
 
-            # ICS export
+            st.subheader("מטלות משובצות")
+            df_tasks = _events_to_rows(task_events)
+            if df_tasks.empty:
+                st.warning("לא נמצאו מטלות משובצות. בדוק/י חלונות עבודה, מגבלות יומיות, ו־Buffer.", icon="⚠️")
+            else:
+                st.dataframe(
+                    df_tasks,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "כותרת": st.column_config.TextColumn("כותרת", width="large"),
+                        "סוג": st.column_config.TextColumn("סוג", width="small"),
+                        "תאריך": st.column_config.TextColumn("תאריך", width="small"),
+                        "יום": st.column_config.TextColumn("יום", width="small"),
+                        "התחלה": st.column_config.TextColumn("התחלה", width="small"),
+                        "סיום": st.column_config.TextColumn("סיום", width="small"),
+                    },
+                )
+
+            st.subheader("חסמים שנכללו ביומן")
+            df_constraints = _events_to_rows(constraint_events)
+            if df_constraints.empty:
+                st.info("לא הוגדרו/נכללו חסמים בשיבוץ.", icon="ℹ️")
+            else:
+                st.dataframe(
+                    df_constraints,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "כותרת": st.column_config.TextColumn("כותרת", width="large"),
+                        "סוג": st.column_config.TextColumn("סוג", width="small"),
+                        "תאריך": st.column_config.TextColumn("תאריך", width="small"),
+                        "יום": st.column_config.TextColumn("יום", width="small"),
+                        "התחלה": st.column_config.TextColumn("התחלה", width="small"),
+                        "סיום": st.column_config.TextColumn("סיום", width="small"),
+                    },
+                )
+
+            # ----------- ICS export -----------
             st.subheader("ייצוא ליומן")
             ics_text = build_ics(events, st.session_state["tz_name"])
             st.download_button(
@@ -1687,7 +1771,7 @@ elif step == 6:
                 mime="text/calendar",
             )
 
-            # Also offer JSON export for debugging
+            # Snapshot export
             payload = st.session_state.get("wizard_saved_payload")
             if payload:
                 st.download_button(
