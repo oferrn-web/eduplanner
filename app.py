@@ -1363,11 +1363,6 @@ elif step == 1:
     month = int(st.session_state["month"])
     ensure_tasks_df(year, month)
 
-    with st.form("form_tasks", clear_on_submit=False):
-        st.info("טיפ: כדי למחוק שורה, סמן/י את עמודת 'מחיקה' ואז לחצ/י שמירה.", icon="💡")
-
-        st.subheader("הוספת מטלה")
-
     with st.form("add_task_form", clear_on_submit=True):
         c1, c2 = st.columns([2, 2])
         with c1:
