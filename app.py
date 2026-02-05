@@ -1005,6 +1005,9 @@ def ensure_tasks_df(year: int, month: int):
             if c not in df.columns:
                 df[c] = False if c == "delete" else ""
         st.session_state["tasks_df"] = df[TASK_COLS]
+    
+    if "delete" not in st.session_state["tasks_df"].columns:
+        st.session_state["tasks_df"]["delete"] = False
 
 
 def df_to_tasks(df: pd.DataFrame) -> List[Task]:
@@ -1363,23 +1366,69 @@ elif step == 1:
     with st.form("form_tasks", clear_on_submit=False):
         st.info("טיפ: כדי למחוק שורה, סמן/י את עמודת 'מחיקה' ואז לחצ/י שמירה.", icon="💡")
 
-        edited = st.data_editor(
-            st.session_state["tasks_df"],
-            use_container_width=True,
-            height=520,
-            num_rows="dynamic",
-            key="editor_tasks_v1",
-            column_config={
-                "task_id": st.column_config.TextColumn("מזהה", width="small"),
-                "course": st.column_config.TextColumn("קורס", width="medium"),
-                "title": st.column_config.TextColumn("מטלה", width="large"),
-                "deadline": st.column_config.TextColumn("דדליין (dd/mm/yyyy)", width="small"),
-                "estimated_hours": st.column_config.NumberColumn("שעות", width="small"),
-                "priority": st.column_config.NumberColumn("עדיפות", width="small"),
-                "notes": st.column_config.TextColumn("הערות", width="large"),
-                "delete": st.column_config.CheckboxColumn("מחיקה", width="small"),
-            },
-        )
+        st.subheader("הוספת מטלה")
+
+    with st.form("add_task_form", clear_on_submit=True):
+        c1, c2 = st.columns([2, 2])
+        with c1:
+            course = st.text_input("שם הקורס")
+            title = st.text_input("שם המטלה")
+            notes = st.text_area("הערות", height=90)
+
+        with c2:
+            deadline = st.text_input("דדליין (dd/mm/yyyy)", placeholder="לדוגמה: 12/03/2026")
+            estimated_hours = st.number_input("שעות משוערות", min_value=0.0, value=3.0, step=0.5)
+            priority = st.selectbox("עדיפות (1-5)", options=[1, 2, 3, 4, 5], index=2)
+
+        submit = st.form_submit_button("➕ הוסף מטלה")
+
+    if submit:
+        try:
+            dl = parse_date_any(deadline)  # הפונקציה שלך שתומכת dd/mm/yyyy
+        except Exception:
+            st.error("דדליין לא תקין. יש להזין בפורמט dd/mm/yyyy, לדוגמה 12/03/2026.")
+            st.stop()
+
+        df = st.session_state["tasks_df"].copy()
+
+        # מזהה אוטומטי
+        next_id = f"T{len(df) + 1}"
+        row = {
+            "task_id": next_id,
+            "course": course.strip(),
+            "title": title.strip(),
+            "deadline": dl.strftime("%d/%m/%Y"),
+            "estimated_hours": float(estimated_hours),
+            "priority": int(priority),
+            "notes": notes.strip(),
+            "delete": False,
+        }
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        st.session_state["tasks_df"] = df
+        st.success("המטלה נוספה.")
+
+    st.divider()
+    st.subheader("רשימת מטלות")
+
+    # תצוגה קריאה בלבד (מומלץ HTML כדי למנוע תקלות RTL)
+    df_view = st.session_state["tasks_df"].copy()
+    if "delete" not in df_view.columns:
+        df_view["delete"] = False
+
+    render_html_table(df_view.drop(columns=[]), height_px=420)
+
+    st.caption("למחיקה: סמן/י בעמודת delete ואז לחץ/י על כפתור המחיקה למטה.")
+
+    c_del1, c_del2 = st.columns([1, 3])
+    with c_del1:
+        if st.button("🗑️ מחק שורות מסומנות", type="secondary"):
+            df = st.session_state["tasks_df"].copy()
+            if "delete" in df.columns:
+                df = df[~df["delete"].fillna(False)].copy()
+                df["delete"] = False
+                st.session_state["tasks_df"] = df
+                st.success("השורות המסומנות נמחקו.")
+                st.rerun()
 
         save = st.form_submit_button("💾 שמירה והמשך", type="primary")
         back = st.form_submit_button("⬅️ חזרה", type="secondary")
@@ -1388,7 +1437,7 @@ elif step == 1:
         go_step(0)
 
     if save:
-        df = edited.copy()
+        df = st.session_state["tasks_df"].copy()
         for c in TASK_COLS:
             if c not in df.columns:
                 df[c] = False if c == "delete" else ""
