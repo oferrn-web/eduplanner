@@ -1410,33 +1410,52 @@ elif step == 1:
     if "delete" not in df_view.columns:
         df_view["delete"] = False
 
-    render_html_table(df_view.drop(columns=[]), height_px=420)
+    st.divider()
+    st.subheader("רשימת מטלות (סמן/י למחיקה)")
 
-    st.caption("למחיקה: סמן/י בעמודת delete ואז לחץ/י על כפתור המחיקה למטה.")
+    # ודא שקיימת עמודת delete ב-DF
+    if "delete" not in st.session_state["tasks_df"].columns:
+        st.session_state["tasks_df"]["delete"] = False
 
-    c_del1, c_del2 = st.columns([1, 3])
-    with c_del1:
-        if st.button("🗑️ מחק שורות מסומנות", type="secondary"):
+    # תצוגה + סימון מחיקה (DataEditor רק לסימון, לא להזנת טקסט חופשי)
+    df_current = st.session_state["tasks_df"].copy()
+
+    edited_del = st.data_editor(
+        df_current,
+        use_container_width=True,
+        num_rows="fixed",
+        height=420,
+        column_config={
+            "task_id": st.column_config.TextColumn("מזהה", width="small", disabled=True),
+            "course": st.column_config.TextColumn("קורס", width="medium"),
+            "title": st.column_config.TextColumn("מטלה", width="large"),
+            "deadline": st.column_config.TextColumn("דדליין (dd/mm/yyyy)", width="small"),
+            "estimated_hours": st.column_config.NumberColumn("שעות", width="small"),
+            "priority": st.column_config.NumberColumn("עדיפות", width="small"),
+            "notes": st.column_config.TextColumn("הערות", width="large"),
+            "delete": st.column_config.CheckboxColumn("מחיקה", width="small"),
+        },
+        key="tasks_delete_editor",
+    )
+
+    # שמור את הסימונים חזרה ל-session_state
+    st.session_state["tasks_df"] = edited_del.copy()
+
+    c_del, c_spacer = st.columns([1, 3])
+    with c_del:
+        if st.button("🗑️ מחק מטלות מסומנות", type="secondary"):
             df = st.session_state["tasks_df"].copy()
+            mask = df.get("delete", False)
+            if isinstance(mask, pd.Series):
+                df = df[~mask.fillna(False)].copy()
+            else:
+                # במקרה קצה: אם אין סדרה מסיבה כלשהי
+                df = df.copy()
             if "delete" in df.columns:
-                df = df[~df["delete"].fillna(False)].copy()
                 df["delete"] = False
-                st.session_state["tasks_df"] = df
-                st.success("השורות המסומנות נמחקו.")
-                st.rerun()
-
-        save = st.button("💾 שמירה והמשך", type="primary")
-        back = st.button("⬅️ חזרה", type="secondary")
-
-    if back:
-        go_step(0)
-
-    if save:
-        df = st.session_state["tasks_df"].copy()
-        for c in TASK_COLS:
-            if c not in df.columns:
-                df[c] = False if c == "delete" else ""
-        st.session_state["tasks_df"] = df[TASK_COLS].copy()
+            st.session_state["tasks_df"] = df
+            st.success("נמחקו המטלות שסומנו למחיקה.")
+            st.rerun()
 
         # Validate at least one task
         tasks = df_to_tasks(st.session_state["tasks_df"])
