@@ -1236,17 +1236,17 @@ div[data-testid="stDataEditor"] {
   overflow-x: auto !important;
 }
 
-/* כותרות עמודות ותאי טבלה: עברית מימין לשמאל */
+/* כותרות עמודות ותאי טבלה: נשארים LTR כדי לא “להעלים” טקסט,
+   אבל מיושרים לימין כדי שעברית תיראה נכון */
 div[data-testid="stDataFrame"] [role="columnheader"],
 div[data-testid="stDataFrame"] [role="gridcell"],
 div[data-testid="stDataEditor"] [role="columnheader"],
 div[data-testid="stDataEditor"] [role="gridcell"] {
+  direction: ltr !important;
   text-align: right !important;
-  direction: rtl !important;
-  unicode-bidi: plaintext;
 }
 
-/* עטיפת טקסט במקום חיתוך */
+/* עטיפת טקסט */
 div[data-testid="stDataFrame"] [role="gridcell"],
 div[data-testid="stDataEditor"] [role="gridcell"] {
   white-space: normal !important;
