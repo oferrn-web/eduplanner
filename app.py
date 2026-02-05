@@ -1426,7 +1426,7 @@ elif step == 1:
                 st.rerun()
 
         save = st.button("💾 שמירה והמשך", type="primary")
-        back = st.form_submit_button("⬅️ חזרה", type="secondary")
+        back = st.button("⬅️ חזרה", type="secondary")
 
     if back:
         go_step(0)
