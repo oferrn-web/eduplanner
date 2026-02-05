@@ -1163,33 +1163,48 @@ def step_header(title: str, subtitle: str = ""):
 # RTL Styling
 # =========================
 def inject_rtl_css():
-    st.markdown(
-        """
+    st.markdown("""
 <style>
-/* Global RTL */
-html, body, [class*="css"]  { direction: rtl; text-align: right; }
-[data-testid="stSidebar"] { direction: rtl; text-align: right; }
+/* RTL לכל האפליקציה */
+html, body, [class*="stApp"] { direction: rtl; text-align: right; }
+h1,h2,h3,h4,h5,h6,p,li,div,span,label { direction: rtl; text-align: right; }
+section[data-testid="stSidebar"] * { direction: rtl; text-align: right; }
+input, textarea { direction: rtl !important; text-align: right !important; }
 
-/* Make inputs feel RTL */
-input, textarea { direction: rtl; text-align: right; }
+/* =========
+   חריגה: טבלאות Streamlit נשארות LTR (כדי לא לשבור Layout),
+   אבל הטקסט בתאים מיושר לימין + עטיפה
+   ========= */
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"] {
+  direction: ltr !important;
+}
 
-/* Data editor headers and cells */
-div[data-testid="stDataFrame"] * { direction: rtl; text-align: right; }
+/* יישור לימין של תוכן טבלה */
+div[data-testid="stDataFrame"] [role="columnheader"],
+div[data-testid="stDataFrame"] [role="gridcell"],
+div[data-testid="stDataEditor"] [role="columnheader"],
+div[data-testid="stDataEditor"] [role="gridcell"] {
+  text-align: right !important;
+  direction: rtl !important;
+  unicode-bidi: plaintext;
+}
 
-/* Keep numbers readable */
-.rtl-num { direction:ltr; unicode-bidi: embed; }
+/* עטיפת טקסט במקום חיתוך */
+div[data-testid="stDataFrame"] [role="gridcell"],
+div[data-testid="stDataEditor"] [role="gridcell"] {
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  line-height: 1.25 !important;
+}
 
-/* Cards */
-.edu-card {
-  border: 1px solid rgba(49, 51, 63, 0.2);
-  border-radius: 14px;
-  padding: 16px 16px;
-  background: rgba(255,255,255,0.65);
+/* גלילה אופקית אם צריך */
+div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+  overflow-x: auto !important;
 }
 </style>
-""",
-        unsafe_allow_html=True,
-    )
+""", unsafe_allow_html=True)
 
 
 # =========================
@@ -1321,6 +1336,7 @@ elif step == 1:
         edited = st.data_editor(
             st.session_state["tasks_df"],
             use_container_width=True,
+            height=360,
             num_rows="dynamic",
             key="editor_tasks_v1",
             column_config={
@@ -1370,6 +1386,7 @@ elif step == 2:
         wd_df = st.data_editor(
             st.session_state["weekday_blocks_df"],
             use_container_width=True,
+            height=360,
             num_rows="dynamic",
             key="editor_weekday_blocks_v1",
             column_config={
@@ -1385,6 +1402,7 @@ elif step == 2:
         date_df = st.data_editor(
             st.session_state["date_blocks_df"],
             use_container_width=True,
+            height=360,
             num_rows="dynamic",
             key="editor_date_blocks_v1",
             column_config={
@@ -1421,6 +1439,7 @@ elif step == 3:
         fixed_df = st.data_editor(
             st.session_state["fixed_daily_df"],
             use_container_width=True,
+            height=360,
             num_rows="dynamic",
             key="editor_fixed_daily_v1",
             column_config={
@@ -1732,6 +1751,7 @@ elif step == 6:
                     df_tasks,
                     use_container_width=True,
                     hide_index=True,
+                    height=420,
                     column_config={
                         "כותרת": st.column_config.TextColumn("כותרת", width="large"),
                         "סוג": st.column_config.TextColumn("סוג", width="small"),
@@ -1751,6 +1771,7 @@ elif step == 6:
                     df_constraints,
                     use_container_width=True,
                     hide_index=True,
+                    height=420,
                     column_config={
                         "כותרת": st.column_config.TextColumn("כותרת", width="large"),
                         "סוג": st.column_config.TextColumn("סוג", width="small"),
