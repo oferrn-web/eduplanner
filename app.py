@@ -1457,12 +1457,20 @@ elif step == 1:
             st.success("נמחקו המטלות שסומנו למחיקה.")
             st.rerun()
 
-        # Validate at least one task
-        tasks = df_to_tasks(st.session_state["tasks_df"])
-        if not tasks:
-            st.error("לא נמצאו מטלות תקינות. ודא/י שיש דדליין בפורמט dd/mm/yyyy ושעות משוערות.")
-        else:
-            go_step(2)
+    # Validate at least one task + Next button
+    tasks = df_to_tasks(st.session_state["tasks_df"])
+    if not tasks:
+        st.error("לא נמצאו מטלות תקינות. ודא/י שיש דדליין בפורמט dd/mm/yyyy ושעות משוערות.")
+        st.button("המשך לחסמים ➡️", type="primary", disabled=True)
+    else:
+        c_back, c_next = st.columns([1, 1])
+        with c_back:
+            if st.button("⬅️ חזרה", type="secondary"):
+                go_step(0)
+        with c_next:
+            if st.button("המשך לחסמים ➡️", type="primary"):
+                go_step(2)
+
 
 # =========================
 # Step 2: Constraints (weekday/date)
