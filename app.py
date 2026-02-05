@@ -1215,27 +1215,45 @@ inject_rtl_css()
 init_wizard_state()
 
 # =========================
-# Global RTL Styling
+# Global RTL (stable) + Tables exception
 # =========================
 st.markdown("""
 <style>
+/* RTL לכל האפליקציה */
 html, body, [class*="stApp"] { direction: rtl; text-align: right; }
-
-/* כל טקסט */
 h1,h2,h3,h4,h5,h6,p,li,div,span,label { direction: rtl; text-align: right; }
-
-/* Sidebar */
 section[data-testid="stSidebar"] * { direction: rtl; text-align: right; }
-
-/* קלטים */
 input, textarea { direction: rtl !important; text-align: right !important; }
 
-/* טבלאות Streamlit */
-div[data-testid="stDataFrame"] * { direction: rtl !important; text-align: right !important; }
-div[data-testid="stDataEditor"] * { direction: rtl !important; text-align: right !important; }
+/* ========== חשוב ==========
+   טבלאות Streamlit עצמן נשארות LTR (מבנה הגריד),
+   אבל תוכן התאים בעברית מיושר לימין ונעטף.
+   זה מונע את חיתוך הערכים.
+   ========================== */
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"] {
+  direction: ltr !important;
+  overflow-x: auto !important;
+}
 
-/* גלילה אופקית במקום חיתוך */
-div[data-testid="stDataFrame"] { overflow-x: auto !important; }
+/* כותרות עמודות ותאי טבלה: עברית מימין לשמאל */
+div[data-testid="stDataFrame"] [role="columnheader"],
+div[data-testid="stDataFrame"] [role="gridcell"],
+div[data-testid="stDataEditor"] [role="columnheader"],
+div[data-testid="stDataEditor"] [role="gridcell"] {
+  text-align: right !important;
+  direction: rtl !important;
+  unicode-bidi: plaintext;
+}
+
+/* עטיפת טקסט במקום חיתוך */
+div[data-testid="stDataFrame"] [role="gridcell"],
+div[data-testid="stDataEditor"] [role="gridcell"] {
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  line-height: 1.25 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1336,18 +1354,18 @@ elif step == 1:
         edited = st.data_editor(
             st.session_state["tasks_df"],
             use_container_width=True,
-            height=360,
+            height=520,
             num_rows="dynamic",
             key="editor_tasks_v1",
             column_config={
-                "delete": st.column_config.CheckboxColumn("מחיקה"),
-                "task_id": st.column_config.TextColumn("מזהה", help="מזהה פנימי קצר, למשל T1"),
-                "course": st.column_config.TextColumn("שם הקורס"),
-                "title": st.column_config.TextColumn("שם המטלה"),
-                "deadline": st.column_config.TextColumn("דדליין (dd/mm/yyyy)", help="לדוגמה: 10/03/2026"),
-                "estimated_hours": st.column_config.NumberColumn("שעות משוערות", min_value=0.0, step=0.5),
-                "priority": st.column_config.NumberColumn("עדיפות 1–5", min_value=1, max_value=5, step=1),
-                "notes": st.column_config.TextColumn("הערות"),
+                "task_id": st.column_config.TextColumn("מזהה", width="small"),
+                "course": st.column_config.TextColumn("קורס", width="medium"),
+                "title": st.column_config.TextColumn("מטלה", width="large"),
+                "deadline": st.column_config.TextColumn("דדליין (dd/mm/yyyy)", width="small"),
+                "estimated_hours": st.column_config.NumberColumn("שעות", width="small"),
+                "priority": st.column_config.NumberColumn("עדיפות", width="small"),
+                "notes": st.column_config.TextColumn("הערות", width="large"),
+                "delete": st.column_config.CheckboxColumn("מחיקה", width="small"),
             },
         )
 
@@ -1386,15 +1404,15 @@ elif step == 2:
         wd_df = st.data_editor(
             st.session_state["weekday_blocks_df"],
             use_container_width=True,
-            height=360,
+            height=420,
             num_rows="dynamic",
             key="editor_weekday_blocks_v1",
             column_config={
-                "delete": st.column_config.CheckboxColumn("מחיקה"),
-                "weekday": st.column_config.SelectboxColumn("יום", options=WEEKDAYS_HE),
-                "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-                "end": st.column_config.TextColumn("סיום (HH:MM)"),
-                "label": st.column_config.TextColumn("תיאור"),
+                "weekday": st.column_config.SelectboxColumn("יום", options=WEEKDAYS_HE, width="small"),
+                "start": st.column_config.TextColumn("התחלה", width="small"),
+                "end": st.column_config.TextColumn("סיום", width="small"),
+                "label": st.column_config.TextColumn("תיאור", width="large"),
+                "delete": st.column_config.CheckboxColumn("מחיקה", width="small"),
             },
         )
 
@@ -1402,15 +1420,15 @@ elif step == 2:
         date_df = st.data_editor(
             st.session_state["date_blocks_df"],
             use_container_width=True,
-            height=360,
+            height=420,
             num_rows="dynamic",
             key="editor_date_blocks_v1",
             column_config={
-                "delete": st.column_config.CheckboxColumn("מחיקה"),
-                "date": st.column_config.TextColumn("תאריך (dd/mm/yyyy)", help="לדוגמה: 10/03/2026"),
-                "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-                "end": st.column_config.TextColumn("סיום (HH:MM)"),
-                "label": st.column_config.TextColumn("תיאור"),
+                "delete": st.column_config.CheckboxColumn("מחיקה", width="small"),
+                "date": st.column_config.TextColumn("תאריך (dd/mm/yyyy)", help="לדוגמה: 10/03/2026", width="medium"),
+                "start": st.column_config.TextColumn("התחלה (HH:MM)", width="small"),
+                "end": st.column_config.TextColumn("סיום (HH:MM)", width="small"),
+                "label": st.column_config.TextColumn("תיאור", width="medium"),
             },
         )
 
@@ -1443,10 +1461,10 @@ elif step == 3:
             num_rows="dynamic",
             key="editor_fixed_daily_v1",
             column_config={
-                "delete": st.column_config.CheckboxColumn("מחיקה"),
-                "start": st.column_config.TextColumn("התחלה (HH:MM)"),
-                "end": st.column_config.TextColumn("סיום (HH:MM)"),
-                "label": st.column_config.TextColumn("תיאור"),
+                "delete": st.column_config.CheckboxColumn("מחיקה", width="small"),
+                "start": st.column_config.TextColumn("התחלה (HH:MM)", width="large"),
+                "end": st.column_config.TextColumn("סיום (HH:MM)", width="small"),
+                "label": st.column_config.TextColumn("תיאור", width="medium"),
             },
         )
 
@@ -1751,7 +1769,7 @@ elif step == 6:
                     df_tasks,
                     use_container_width=True,
                     hide_index=True,
-                    height=420,
+                    height=600,
                     column_config={
                         "כותרת": st.column_config.TextColumn("כותרת", width="large"),
                         "סוג": st.column_config.TextColumn("סוג", width="small"),
@@ -1771,7 +1789,7 @@ elif step == 6:
                     df_constraints,
                     use_container_width=True,
                     hide_index=True,
-                    height=420,
+                    height=600,
                     column_config={
                         "כותרת": st.column_config.TextColumn("כותרת", width="large"),
                         "סוג": st.column_config.TextColumn("סוג", width="small"),
