@@ -1219,40 +1219,30 @@ init_wizard_state()
 # =========================
 st.markdown("""
 <style>
-/* RTL לכל האפליקציה */
-html, body, [class*="stApp"] { direction: rtl; text-align: right; }
-h1,h2,h3,h4,h5,h6,p,li,div,span,label { direction: rtl; text-align: right; }
-section[data-testid="stSidebar"] * { direction: rtl; text-align: right; }
-input, textarea { direction: rtl !important; text-align: right !important; }
-
-/* ========== חשוב ==========
-   טבלאות Streamlit עצמן נשארות LTR (מבנה הגריד),
-   אבל תוכן התאים בעברית מיושר לימין ונעטף.
-   זה מונע את חיתוך הערכים.
-   ========================== */
-div[data-testid="stDataFrame"],
-div[data-testid="stDataEditor"] {
-  direction: ltr !important;
-  overflow-x: auto !important;
-}
-
-/* כותרות עמודות ותאי טבלה: נשארים LTR כדי לא “להעלים” טקסט,
-   אבל מיושרים לימין כדי שעברית תיראה נכון */
-div[data-testid="stDataFrame"] [role="columnheader"],
-div[data-testid="stDataFrame"] [role="gridcell"],
-div[data-testid="stDataEditor"] [role="columnheader"],
-div[data-testid="stDataEditor"] [role="gridcell"] {
-  direction: ltr !important;
+/* RTL רק לטקסטים רגילים, לא לגריד של טבלאות */
+.stMarkdown, .stMarkdown *, .stText, .stCaption, .stHeader, .stSubheader, .stTitle {
+  direction: rtl !important;
   text-align: right !important;
 }
 
-/* עטיפת טקסט */
-div[data-testid="stDataFrame"] [role="gridcell"],
-div[data-testid="stDataEditor"] [role="gridcell"] {
-  white-space: normal !important;
-  word-break: break-word !important;
-  overflow: visible !important;
-  line-height: 1.25 !important;
+/* Sidebar RTL */
+section[data-testid="stSidebar"] * {
+  direction: rtl !important;
+  text-align: right !important;
+}
+
+/* Inputs RTL */
+input, textarea {
+  direction: rtl !important;
+  text-align: right !important;
+}
+
+/* טבלאות Streamlit נשארות LTR (כדי לא לשבור ציור/גלילה) */
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"] {
+  direction: ltr !important;
+  text-align: left !important;
+  overflow-x: auto !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1265,6 +1255,28 @@ if st.sidebar.button("🧹 איפוס מלא", type="secondary"):
     st.rerun()
 
 step = int(st.session_state["wizard_step"])
+
+def render_html_table(df: pd.DataFrame, height_px: int = 520):
+    if df is None or df.empty:
+        st.info("אין נתונים להצגה.", icon="ℹ️")
+        return
+
+    # HTML table with RTL and wrapping
+    html = df.to_html(index=False, escape=True)
+    st.markdown(
+        f"""
+        <div dir="rtl" style="text-align:right; max-height:{height_px}px; overflow:auto; border:1px solid #e6e6e6; border-radius:10px; padding:8px;">
+          <style>
+            table {{ width:100%; border-collapse:collapse; }}
+            th, td {{ border-bottom:1px solid #eee; padding:8px; vertical-align:top; text-align:right; }}
+            th {{ position:sticky; top:0; background:#fff; }}
+            td {{ white-space:normal; word-break:break-word; }}
+          </style>
+          {html}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # Shared settings kept in session_state
 if "tz_name" not in st.session_state:
@@ -1765,11 +1777,11 @@ elif step == 6:
             if df_tasks.empty:
                 st.warning("לא נמצאו מטלות משובצות. בדוק/י חלונות עבודה, מגבלות יומיות, ו־Buffer.", icon="⚠️")
             else:
-                st.dataframe(
+                render_html_table(
                     df_tasks,
                     use_container_width=True,
                     hide_index=True,
-                    height=600,
+                    height_px=520,
                     column_config={
                         "כותרת": st.column_config.TextColumn("כותרת", width="large"),
                         "סוג": st.column_config.TextColumn("סוג", width="small"),
@@ -1785,11 +1797,11 @@ elif step == 6:
             if df_constraints.empty:
                 st.info("לא הוגדרו/נכללו חסמים בשיבוץ.", icon="ℹ️")
             else:
-                st.dataframe(
+                render_html_table(
                     df_constraints,
                     use_container_width=True,
                     hide_index=True,
-                    height=600,
+                    height_px=420,
                     column_config={
                         "כותרת": st.column_config.TextColumn("כותרת", width="large"),
                         "סוג": st.column_config.TextColumn("סוג", width="small"),
