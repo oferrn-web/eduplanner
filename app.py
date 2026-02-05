@@ -1425,7 +1425,7 @@ elif step == 1:
                 st.success("השורות המסומנות נמחקו.")
                 st.rerun()
 
-        save = st.form_submit_button("💾 שמירה והמשך", type="primary")
+        save = st.button("💾 שמירה והמשך", type="primary")
         back = st.form_submit_button("⬅️ חזרה", type="secondary")
 
     if back:
